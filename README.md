@@ -10,6 +10,13 @@
 
 开源 · 自带 API Key（BYO-Key）· 数据本地自主 · 一键启动
 
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/version-v1.0.0-5B5BD6" alt="v1.0.0">
+  <img src="https://img.shields.io/badge/manim-CE%200.20-orange" alt="ManimCE 0.20">
+</p>
+
 </div>
 
 ---
@@ -93,3 +100,9 @@ app/
 [MIT](LICENSE) © buBailai
 
 > 渲染引擎 ManimCE、TTS edge-tts、static-ffmpeg 等依赖各自遵循其开源许可。
+
+## ⭐ Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=buBailai/Any2Manim&type=Date)](https://star-history.com/#buBailai/Any2Manim&Date)
+
+> 如果 Any2Manim 帮到了你，欢迎点个 ⭐ Star 让更多老师看到。
