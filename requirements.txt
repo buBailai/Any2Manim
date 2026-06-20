@@ -1,0 +1,14 @@
+# Any2Manim 后端依赖（个人版 MVP）
+# 渲染引擎（重）— 已在 .venv 装好，列此供免安装包/Docker 复现
+manim==0.20.1
+# Web 框架
+fastapi==0.120.1
+uvicorn[standard]==0.38.0
+python-multipart==0.0.20
+# LLM 调用（OpenAI 兼容，BYO-Key）
+httpx==0.28.1
+# 校园版任务队列（个人版用进程内 asyncio，不强依赖）：
+# rq==2.0  redis==5.2   # 阶段5 再启用
+# 配音
+edge-tts==7.0.0
+static-ffmpeg==2.13
