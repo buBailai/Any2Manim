@@ -18,9 +18,10 @@ ASSETS_DIR = DATA_DIR / "assets"
 DB_PATH = DATA_DIR / "any2manim.db"
 CONFIG_PATH = DATA_DIR / "config.json"     # API 厂商/Key/模型（BYO-Key，本地存）
 
-# ── 渲染可执行文件（同 venv 内的 manim）──────────────────────
-VENV_BIN = Path(sys.executable).parent
-MANIM_BIN = str(VENV_BIN / "manim")
+# ── 渲染调用：用 `python -m manim` 而非 console script ──────────
+# 跨平台稳：Windows 内嵌 Python 没有 bin/manim（console script 是 Scripts\manim.exe），
+# 直接按路径找 manim 会 WinError 2；用当前解释器 -m manim 免去找 .exe，三端一致。
+MANIM_CMD = [sys.executable, "-m", "manim"]
 
 # ── ffmpeg/ffprobe：优先用 static-ffmpeg（自带 libass，支持字幕烧录）──────
 # 系统 homebrew ffmpeg 不带 libass，烧录字幕用不了；static-ffmpeg 是 pip 装的

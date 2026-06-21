@@ -79,7 +79,7 @@ def condense_traceback(stderr: str, limit: int = 1400) -> str:
 # ── 子进程执行 ──────────────────────────────────────────────
 async def _run_manim(args: list[str], timeout: int) -> tuple[int, str, bool]:
     proc = await asyncio.create_subprocess_exec(
-        config.MANIM_BIN, *args,
+        *config.MANIM_CMD, *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )

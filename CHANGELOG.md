@@ -13,6 +13,19 @@ Any2Manim 所有面向用户的变更都记录在此文件。
 
 ---
 
+## [1.0.1] - 2026-06-21
+
+> 修复首次在 Windows 上测试发现的兼容问题，使免安装包能正常渲染。
+
+### Fixed
+- **Windows 渲染报错 `[WinError 2] 系统找不到指定的文件`**：渲染引擎改用 `python -m manim` 调用，不再按路径找 `manim` 可执行文件（Windows 内嵌 Python 无 `bin/manim`，原方式找不到）。Mac / Windows / Linux 统一。
+
+### 打包（Windows 免安装包）
+- 安装脚本补装 `setuptools` / `wheel`：manim 的依赖 `srt` 仅有源码包、需现场构建，缺这两个会报 `Cannot import 'setuptools.build_meta'`。
+- 启动 / 安装脚本内容改为纯 ASCII（中文只留在说明 .txt）：避免中文 Windows 下 `.bat` 里的中文被按 GBK 误解析成命令。
+
+---
+
 ## [1.0.0] - 2026-06-20
 
 > 首个公开版本。把「老师用一句话描述 → AI 生成教学动画视频」的完整链路跑通：
