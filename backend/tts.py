@@ -5,13 +5,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Optional
 
 import edge_tts
 
 from . import config
+
+
+def _log(msg: str) -> None:
+    """打到 uvicorn 控制台（黑窗口），便于排查配音/字幕问题。"""
+    print(f"[配音] {msg}", file=sys.stderr, flush=True)
 
 # 可选音色（教学场景挑了清晰自然的几个）
 VOICES = [
@@ -29,19 +36,45 @@ async def synth(text: str, out_mp3: Path, *, voice: str = DEFAULT_VOICE,
     if voice not in VOICE_IDS:
         voice = DEFAULT_VOICE
     out_mp3.parent.mkdir(parents=True, exist_ok=True)
+    # edge-tts 连的是微软 speech.platform.bing.com，大陆网络常被拦/限流报 403。
+    # edge-tts 默认【不走】系统代理，所以光开 Clash 没用——必须显式把代理传给它。
+    # 取代理优先级：A2M_TTS_PROXY 环境变量 > 系统 HTTPS/ALL_PROXY 环境变量 >
+    # 操作系统系统代理（Windows 注册表里 Clash 设的那个，靠 getproxies() 读到）。
+    proxy = (os.environ.get("A2M_TTS_PROXY") or os.environ.get("HTTPS_PROXY")
+             or os.environ.get("https_proxy") or os.environ.get("ALL_PROXY")
+             or os.environ.get("all_proxy") or None)
+    if not proxy:
+        try:
+            import urllib.request
+            sysp = urllib.request.getproxies()      # Windows 下读注册表里的系统代理
+            proxy = sysp.get("https") or sysp.get("http") or None
+            if proxy and "://" not in proxy:
+                proxy = "http://" + proxy
+        except Exception:  # noqa: BLE001
+            proxy = None
+    _log(f"edge-tts 代理: {proxy or '直连（无代理）'}")
     try:
-        comm = edge_tts.Communicate(text, voice, rate=rate)
+        comm = edge_tts.Communicate(text, voice, rate=rate, proxy=proxy)
         await comm.save(str(out_mp3))
-        return out_mp3.exists() and out_mp3.stat().st_size > 0
-    except Exception:  # noqa: BLE001
+        ok = out_mp3.exists() and out_mp3.stat().st_size > 0
+        if not ok:
+            _log("edge-tts 返回空音频（可能被网络拦截或服务暂不可用）")
+        return ok
+    except Exception as e:  # noqa: BLE001
+        via = f"，已用代理 {proxy}" if proxy else "，未配代理（大陆网络建议设 A2M_TTS_PROXY 走代理）"
+        _log(f"edge-tts 合成失败: {type(e).__name__}: {e}{via}")
         return False
 
 
 async def _duration(path: Path) -> float:
-    proc = await asyncio.create_subprocess_exec(
-        config.ffmpeg_bins()[1], "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=nw=1:nk=1", str(path),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            config.ffmpeg_bins()[1], "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=nw=1:nk=1", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    except FileNotFoundError:
+        _log("找不到 ffprobe（static-ffmpeg 未就绪）")
+        return 0.0
     out, _ = await proc.communicate()
     try:
         return float(out.decode().strip())
@@ -117,14 +150,23 @@ def build_srt(text: str, audio_dur: float, out_srt: Path) -> bool:
 
 
 async def _run_ffmpeg(args: list[str], timeout: int = 180) -> bool:
-    proc = await asyncio.create_subprocess_exec(
-        config.ffmpeg_bins()[0], "-y", *args,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    ff = config.ffmpeg_bins()[0]
     try:
-        await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        proc = await asyncio.create_subprocess_exec(
+            ff, "-y", *args,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    except FileNotFoundError:
+        _log(f"找不到 ffmpeg 可执行文件（{ff}）—— static-ffmpeg 可能没下载成功，请联网后重导一次")
+        return False
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
+            _log("ffmpeg 失败: " + " | ".join(tail))
         return proc.returncode == 0
     except asyncio.TimeoutError:
         proc.kill(); await proc.wait()
+        _log("ffmpeg 超时")
         return False
 
 
@@ -151,11 +193,18 @@ async def subtitles_supported() -> bool:
     """本机 ffmpeg 是否带 subtitles 滤镜（libass）。无则烧录字幕不可用。"""
     global _has_subtitles
     if _has_subtitles is None:
-        proc = await asyncio.create_subprocess_exec(
-            config.ffmpeg_bins()[0], "-hide_banner", "-filters",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                config.ffmpeg_bins()[0], "-hide_banner", "-filters",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        except FileNotFoundError:
+            _log("找不到 ffmpeg，无法检测字幕滤镜")
+            _has_subtitles = False
+            return _has_subtitles
         out, _ = await proc.communicate()
         _has_subtitles = b" subtitles " in (out or b"")
+        if not _has_subtitles:
+            _log("当前 ffmpeg 不含 subtitles(libass) 滤镜 → 烧录字幕不可用，将退化为外挂 SRT")
     return _has_subtitles
 
 

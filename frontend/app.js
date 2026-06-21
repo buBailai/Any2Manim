@@ -170,6 +170,7 @@ function handleEvent(ev) {
     case 'failed': onFailed(ev); break;
     case 'exporting': setBadge('导出高清中…'); logLine('info', '▸ 导出高清'); $('#exportBtn').disabled = true; break;
     case 'voicing': setBadge('合成配音中…'); logLine('info', '▸ 生成旁白 + edge-tts 配音'); break;
+    case 'voice_warn': logLine('err', '⚠ 配音/字幕未成功：' + (ev.warn || '') + '（已导出无声版本）'); break;
     case 'export_ready': onExportReady(ev); break;
     case 'export_failed': setBadge('导出失败'); logLine('err', '✗ 导出失败：' + (ev.error||'')); window._setExporting && window._setExporting(false);
       $('#emProducts').innerHTML = `<div style="font-size:12px;color:var(--err)">导出失败：${ev.error||'未知'}</div>`; break;

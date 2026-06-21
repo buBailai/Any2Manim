@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -189,16 +190,25 @@ async def _run_export(pid: str, seq: int, formats: list[str], quality: str,
 
         if vo.get("enabled"):
             await broker.publish(pid, {"type": "voicing", "seq": seq})
+            fb = config.ffmpeg_bins()
+            print(f"[配音] ffmpeg={fb[0]}", file=sys.stderr, flush=True)
             narration = await _ensure_narration(pid, seq, v)
-            if narration:
+            warn = None
+            if not narration:
+                warn = "没有解说词可配音"
+            else:
                 mp3 = exdir / f"v{seq}.mp3"
-                if await tts.synth(narration, mp3, voice=vo.get("voice", tts.DEFAULT_VOICE),
-                                   rate=vo.get("rate", "+0%")):
+                if not await tts.synth(narration, mp3, voice=vo.get("voice", tts.DEFAULT_VOICE),
+                                       rate=vo.get("rate", "+0%")):
+                    warn = "配音合成失败（edge-tts，需联网；反复失败可能被网络拦截）"
+                else:
                     srt = exdir / f"v{seq}.srt"
                     dur = await tts._duration(mp3)
                     has_srt = tts.build_srt(narration, dur, srt)
                     voiced = exdir / f"v{seq}_{quality}_voiced.mp4"
-                    if await tts.mux_audio(d, mp3, voiced):
+                    if not await tts.mux_audio(d, mp3, voiced):
+                        warn = "音轨合成失败（ffmpeg 未就绪？看控制台 [配音] 日志）"
+                    else:
                         final = voiced
                         label = f"高清视频 {_QLABEL.get(quality, quality)} · 配音"
                         sub = vo.get("subtitle")
@@ -211,6 +221,9 @@ async def _run_export(pid: str, seq: int, formats: list[str], quality: str,
                                 products.append({"kind": "srt", "label": "字幕文件 SRT（烧录不可用，改外挂）", "url": _media_url(srt), "filename": _dl_name(pid, seq, "srt")})
                         elif sub == "srt" and has_srt:
                             products.append({"kind": "srt", "label": "字幕文件 SRT", "url": _media_url(srt), "filename": _dl_name(pid, seq, "srt")})
+            if warn:
+                print(f"[配音] 跳过：{warn}", file=sys.stderr, flush=True)
+                await broker.publish(pid, {"type": "voice_warn", "seq": seq, "warn": warn})
 
         store.add_export(pid, seq, final)
         products.append({"kind": "mp4", "label": label, "url": _media_url(final),
