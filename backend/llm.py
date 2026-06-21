@@ -217,7 +217,8 @@ class MockLLM(BaseLLM):
         text = user
         color = _pick_color(text)
         rate = _pick_rate(text)
-        title = (re.split(r"[。.\n]", text.strip())[0] or "教学动画")[:18]
+        _clean = re.sub(r"^(老师的需求|需求|分镜|教学镜头计划)[:：]\s*", "", text.strip())
+        title = (re.split(r"[。.\n]", _clean)[0] or "教学动画")[:18]
 
         if task == "edit":
             # user = "当前代码：\n<code>\n\n修改要求：<instruction>"
@@ -228,6 +229,25 @@ class MockLLM(BaseLLM):
 
         if task == "narrate":
             return f"让我们一起来看「{title}」。注意观察画面中各部分的变化，理解它们之间的关系。"
+
+        if task == "plan":
+            return json.dumps({
+                "brief": {"topic": title, "audience": "通用",
+                          "core_claim": f"理解「{title}」的核心",
+                          "final_takeaway": f"{title}的关键结论"},
+                "shots": [
+                    {"id": "shot_01", "teaches": "点题引入",
+                     "actions": [{"verb": "HEADLINE", "text": title},
+                                 {"verb": "SHOW", "desc": "核心对象登场"}], "seconds": 6},
+                    {"id": "shot_02", "teaches": "展开关键元素",
+                     "actions": [{"verb": "SHOW", "desc": "画出关键元素"},
+                                 {"verb": "LABEL", "text": "标注各部分"},
+                                 {"verb": "CAPTION", "text": "观察各部分关系"}], "seconds": 8},
+                    {"id": "shot_03", "teaches": "给出结论",
+                     "actions": [{"verb": "FOCUS", "desc": "强调核心"},
+                                 {"verb": "TAKEAWAY", "text": f"{title}的结论"}], "seconds": 6},
+                ],
+            }, ensure_ascii=False)
 
         if task == "storyboard":
             return (f"分镜计划（演示）：\n"

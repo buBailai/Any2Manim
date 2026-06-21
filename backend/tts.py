@@ -31,8 +31,86 @@ VOICE_IDS = {v["id"] for v in VOICES}
 DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
 
 
+# ── 停顿标记 [停顿X]（edge-tts 的 SSML break 不可控，故在音频层插静音实现）──
+_PAUSE_RE = re.compile(r"\[停顿\s*([0-9]+(?:\.[0-9])?)\s*\]")
+
+
+def strip_pauses(text: str) -> str:
+    """去掉停顿标记，得到纯念稿文本。"""
+    return _PAUSE_RE.sub("", text)
+
+
+def split_pauses(text: str) -> "list[tuple[str, object]]":
+    """按出现顺序切成 [('text', 片段) | ('pause', 秒数), ...]；空白文本片段丢弃。"""
+    parts: list = []
+    pos = 0
+    for m in _PAUSE_RE.finditer(text):
+        seg = text[pos:m.start()]
+        if seg.strip():
+            parts.append(("text", seg))
+        parts.append(("pause", round(float(m.group(1)), 1)))
+        pos = m.end()
+    tail = text[pos:]
+    if tail.strip():
+        parts.append(("text", tail))
+    return parts
+
+
 async def synth(text: str, out_mp3: Path, *, voice: str = DEFAULT_VOICE,
                 rate: str = "+0%") -> bool:
+    """合成旁白；含 [停顿X] 标记时逐段合成并在段间拼接 X 秒静音。"""
+    out_mp3.parent.mkdir(parents=True, exist_ok=True)
+    parts = split_pauses(text)
+    if not any(t == "pause" for t, _ in parts):
+        return await _synth_one(strip_pauses(text), out_mp3, voice=voice, rate=rate)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        items: list = []          # ('file', path) | ('silence', secs)
+        i = 0
+        for typ, val in parts:
+            if typ == "pause":
+                if val > 0:
+                    items.append(("silence", float(val)))
+            else:
+                seg_mp3 = Path(td) / f"seg{i}.mp3"
+                if not await _synth_one(val.strip(), seg_mp3, voice=voice, rate=rate):
+                    return False
+                items.append(("file", seg_mp3))
+                i += 1
+        if not any(k == "file" for k, _ in items):
+            return False
+        return await _concat_audio(items, out_mp3)
+
+
+async def _concat_audio(items: "list[tuple[str, object]]", out: Path) -> bool:
+    """按顺序把音频片段与静音拼成一条 mp3（concat 滤镜，重编码，稳）。"""
+    ff = config.ffmpeg_bins()[0]
+    args: list = []
+    labels = ""
+    for idx, (kind, val) in enumerate(items):
+        if kind == "file":
+            args += ["-i", str(val)]
+        else:  # silence
+            args += ["-f", "lavfi", "-t", f"{float(val):.2f}",
+                     "-i", "anullsrc=r=24000:cl=mono"]
+        labels += f"[{idx}:a]"
+    args += ["-filter_complex", f"{labels}concat=n={len(items)}:v=0:a=1[a]",
+             "-map", "[a]", "-ac", "1", "-ar", "24000", str(out)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ff, "-y", *args, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE)
+    except FileNotFoundError:
+        _log("找不到 ffmpeg，无法拼接停顿音频")
+        return False
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        _log("停顿音频拼接失败：" + (err or b"").decode("utf-8", "replace")[-200:])
+    return proc.returncode == 0 and out.exists()
+
+
+async def _synth_one(text: str, out_mp3: Path, *, voice: str = DEFAULT_VOICE,
+                     rate: str = "+0%") -> bool:
     if voice not in VOICE_IDS:
         voice = DEFAULT_VOICE
     out_mp3.parent.mkdir(parents=True, exist_ok=True)
@@ -85,6 +163,8 @@ async def _duration(path: Path) -> float:
 LEAD_IN = 0.35    # 字幕延后出现（约前 5 帧无字幕），避免第一帧/封面就带字幕
 WRAP_WIDTH = 18   # 单条字幕字数上限；超出不折成两行，而是切成下一条（保证每画面只 1 行）
 SUB_FONTSIZE = 14 # 烧录字幕字号（偏小，少占画面）
+SUB_MARGIN_V = 4  # 字幕距底边的垂直边距（ASS 脚本空间，随分辨率等比缩放）。
+                  # 越小越靠下：默认 libass≈对应距底 4.4%，设 4 后约 2.4%，让出与动画自带文字的间距。
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -131,20 +211,33 @@ def _ts(sec: float) -> str:
 
 
 def build_srt(text: str, audio_dur: float, out_srt: Path) -> bool:
-    """按句子+字数比例分配时间，生成 srt（中文无可靠词级时间戳的折中）。"""
-    segs = _segments(text)
-    if not segs or audio_dur <= 0:
+    """按句子+字数比例分配时间生成 srt；停顿处只推进时间、不出字幕，使字幕与含静音的音轨对齐。"""
+    # 把含停顿的文本展开成时间线：('cue', 字幕单行) | ('gap', 秒数)
+    timeline: list = []
+    for typ, val in split_pauses(text):
+        if typ == "pause":
+            timeline.append(("gap", float(val)))
+        else:
+            for line in _segments(val):
+                timeline.append(("cue", line))
+    cues = [v for t, v in timeline if t == "cue"]
+    if not cues or audio_dur <= 0:
         return False
-    lead = min(LEAD_IN, audio_dur * 0.1)        # 短视频不让 lead 占太多
-    span = max(audio_dur - lead, 0.1)
-    total_chars = sum(len(s) for s in segs) or 1
+    lead = min(LEAD_IN, audio_dur * 0.1)
+    total_pause = sum(v for t, v in timeline if t == "gap")
+    span = max(audio_dur - lead - total_pause, 0.1)   # 纯说话占的时长
+    total_chars = sum(len(s) for s in cues) or 1
     out_srt.parent.mkdir(parents=True, exist_ok=True)
-    lines, t = [], lead
-    for i, s in enumerate(segs, 1):             # 每段单独一条字幕、单行
-        dur = span * len(s) / total_chars
+    lines, t, idx = [], lead, 1
+    for typ, val in timeline:
+        if typ == "gap":
+            t = min(t + val, audio_dur)               # 静音推进，无字幕
+            continue
+        dur = span * len(val) / total_chars
         start, end = t, min(t + dur, audio_dur)
         t = end
-        lines.append(f"{i}\n{_ts(start)} --> {_ts(end)}\n{s}\n")
+        lines.append(f"{idx}\n{_ts(start)} --> {_ts(end)}\n{val}\n")
+        idx += 1
     out_srt.write_text("\n".join(lines), encoding="utf-8")
     return True
 
@@ -215,7 +308,8 @@ async def burn_subtitles(video: Path, srt: Path, out: Path) -> bool:
     # 在 srt 所在目录执行并用 basename，规避路径含空格/中文/冒号的转义难题
     proc = await asyncio.create_subprocess_exec(
         config.ffmpeg_bins()[0], "-y", "-i", str(video.resolve()),
-        "-vf", f"subtitles={srt.name}:force_style='FontSize={SUB_FONTSIZE}'",
+        "-vf", (f"subtitles={srt.name}:force_style="
+                f"'FontSize={SUB_FONTSIZE},Alignment=2,MarginV={SUB_MARGIN_V}'"),
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(out.resolve()),
         cwd=str(srt.parent), stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL)

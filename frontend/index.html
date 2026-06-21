@@ -95,9 +95,12 @@
             <div class="nar-sb-label">📋 配套分镜（旁白按这个节奏写的，编辑时尽量与各步对应，别打乱节奏）</div>
             <div class="nar-storyboard" id="narStoryboard">—</div>
             <textarea class="nar-text" id="narText" placeholder="点下方「生成解说稿」让 AI 按分镜写一版，或直接在这里编辑。改完点「保存」，再去导出配音。"></textarea>
+            <div class="nar-hint">停顿：把光标点到想停的位置，点「⏸ 添加停顿」插入 <code>[停顿1.0]</code>，秒数可改（1 位小数）。配音/字幕会在此处停 N 秒。</div>
             <div class="nar-actions">
               <button class="btn-ghost" id="narGen">生成 / 重写解说稿</button>
+              <button class="btn-ghost" id="narPause" title="在光标处插入停顿标记">⏸ 添加停顿</button>
               <button class="btn-primary" id="narSave">保存</button>
+              <button class="btn-ghost" id="narAudio" title="合成预览音频，可在预览区跟随视频试听">🔊 生成预览音频</button>
               <span class="nar-status" id="narStatus"></span>
             </div>
           </div>
@@ -105,8 +108,10 @@
             <div class="play" id="playBtn"><svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></svg></div>
             <div class="track" id="track"><div class="rail"><div class="fill" id="trackFill"></div></div><div class="thumb" id="trackThumb"></div></div>
             <span class="t" id="timeLabel">--:-- / --:--</span>
-            <span class="q">480p · 静音预览</span>
+            <span class="narr-toggle" id="narrToggle" hidden title="跟随视频试听解说音频">🔊 配音 关</span>
+            <span class="q" id="qLabel">480p · 静音预览</span>
           </div>
+          <audio id="narrAudio" preload="auto" hidden></audio>
         </div>
       </div>
       <div class="timeline" id="timeline">

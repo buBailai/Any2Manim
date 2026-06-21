@@ -97,6 +97,9 @@ async def _run_generation(pid: str, prompt: str) -> None:
     result = await engine.respond(prompt, llm, emit, prior_code=prior,
                                   asset_names=asset_names)
 
+    if getattr(result, "warnings", None):
+        print("[教学检查] " + " | ".join(result.warnings), file=sys.stderr, flush=True)
+
     if not result.ok:
         store.finish_version(pid, seq, status="failed", code=result.code or "",
                              storyboard=result.storyboard,
@@ -249,6 +252,13 @@ async def _run_export(pid: str, seq: int, formats: list[str], quality: str,
                              "filename": _dl_name(pid, seq, "png", "_封面")})
 
     if products:
+        # 导出成片后丢弃临时的解说预览音频（导出已生成自己的配音轨，预览 mp3 不再需要）
+        try:
+            narr = config.project_dir(pid) / "previews" / f"v{seq}_narr.mp3"
+            if narr.exists():
+                narr.unlink()
+        except OSError:
+            pass
         await broker.publish(pid, {"type": "export_ready", "seq": seq, "products": products})
     else:
         await broker.publish(pid, {"type": "export_failed", "seq": seq,

@@ -169,6 +169,7 @@ function handleEvent(ev) {
     case 'preview_ready': onPreviewReady(ev); break;
     case 'failed': onFailed(ev); break;
     case 'exporting': setBadge('导出高清中…'); logLine('info', '▸ 导出高清'); $('#exportBtn').disabled = true; break;
+    case 'teach_repair': logLine('info', '▸ 画面偏简单，正在补充教学内容…'); break;
     case 'voicing': setBadge('合成配音中…'); logLine('info', '▸ 生成旁白 + edge-tts 配音'); break;
     case 'voice_warn': logLine('err', '⚠ 配音/字幕未成功：' + (ev.warn || '') + '（已导出无声版本）'); break;
     case 'export_ready': onExportReady(ev); break;
@@ -270,12 +271,59 @@ function showPreview(url) {
   $('#previewHolder').innerHTML = `<video src="${url}?t=${Date.now()}" muted playsinline></video>`;
   const v = $('#previewHolder video');
   curVideo = v;
+  resetNarrAudio();   // 新版本预览 → 旧解说预览音频作废
   v.onloadedmetadata = () => { $('#timeLabel').textContent = `00:00 / ${fmt(v.duration)}`; setTrackPct(0); };
   v.ontimeupdate = () => { if (v.duration) setTrackPct(v.currentTime / v.duration); $('#timeLabel').textContent = `${fmt(v.currentTime)} / ${fmt(v.duration)}`; if (!$('#exportMenu').hidden) updateCoverHint(); };
-  v.onplay = () => { $('#playBtn').innerHTML = ICON_PAUSE; };
-  v.onpause = () => { $('#playBtn').innerHTML = ICON_PLAY; };
-  v.onended = () => { $('#playBtn').innerHTML = ICON_PLAY; };
+  v.onplay = () => { $('#playBtn').innerHTML = ICON_PAUSE; narrSync('play'); };
+  v.onpause = () => { $('#playBtn').innerHTML = ICON_PLAY; narrSync('pause'); };
+  v.onended = () => { $('#playBtn').innerHTML = ICON_PLAY; narrSync('pause'); };
+  v.onseeked = () => narrSync('seek');
   v.play().catch(() => {});
+}
+
+// ── 解说预览音频（跟随视频试听，免导出）──────────────────
+let narrAudioOn = false;
+function resetNarrAudio() {
+  const a = $('#narrAudio'); if (!a) return;
+  a.pause(); a.removeAttribute('src'); try { a.load(); } catch (e) {}
+  narrAudioOn = false;
+  const t = $('#narrToggle'); if (t) { t.hidden = true; t.classList.remove('on'); t.textContent = '🔊 配音 关'; }
+}
+function narrSync(action) {
+  const a = $('#narrAudio');
+  if (!narrAudioOn || !a || !a.src || !curVideo) { if (a && action !== 'play') a.pause(); return; }
+  if (action === 'play') { try { a.currentTime = curVideo.currentTime; } catch (e) {} a.play().catch(() => {}); }
+  else if (action === 'pause') a.pause();
+  else if (action === 'seek') { try { a.currentTime = curVideo.currentTime; } catch (e) {} }
+}
+function setNarrAudio(on) {
+  narrAudioOn = on;
+  const t = $('#narrToggle'); t.classList.toggle('on', on); t.textContent = on ? '🔊 配音 开' : '🔊 配音 关';
+  if (!on) $('#narrAudio').pause();
+  else if (curVideo && !curVideo.paused) narrSync('play');
+}
+async function genPreviewAudio() {
+  if (!pid || curSeq == null) return;
+  const txt = $('#narText').value.trim();
+  if (!txt) { $('#narStatus').textContent = '先生成或填写解说稿'; return; }
+  $('#narStatus').textContent = '正在合成预览音频…'; $('#narAudio').disabled = true;
+  try {
+    await api('POST', `/api/projects/${pid}/version/${curSeq}/narration`, { text: txt });   // 先存当前稿
+    const r = await api('POST', `/api/projects/${pid}/version/${curSeq}/narration/audio`);
+    const a = $('#narrAudio'); a.src = r.url; try { a.load(); } catch (e) {}
+    $('#narrToggle').hidden = false; setNarrAudio(true);
+    $('#narStatus').textContent = `预览音频就绪（${fmt(r.duration)}）· 切到「预览」播放即可试听`;
+    switchTab('preview');
+  } catch (e) { $('#narStatus').textContent = '合成失败：' + (e.message || e); }
+  $('#narAudio').disabled = false;
+}
+function insertPause() {
+  const ta = $('#narText'); if (!ta) return;
+  const s = ta.selectionStart ?? ta.value.length, e = ta.selectionEnd ?? s;
+  const marker = '[停顿1.0]';
+  ta.value = ta.value.slice(0, s) + marker + ta.value.slice(e);
+  const pos = s + marker.length;
+  ta.focus(); ta.setSelectionRange(pos, pos);
 }
 function showCode(code) { $('#codeBox').textContent = code || '// 无代码'; }
 function fmt(s) { if (!s || isNaN(s)) return '00:00'; const m = Math.floor(s/60), x = Math.floor(s%60); return `${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`; }
@@ -308,6 +356,7 @@ async function genNarration() {
     const r = await api('POST', `/api/projects/${pid}/version/${curSeq}/narration/generate`);
     $('#narText').value = r.text || ''; if (r.storyboard) $('#narStoryboard').textContent = r.storyboard;
     $('#narStatus').textContent = r.text ? '已生成（记得保存或直接导出）' : '生成失败，可手动编写';
+    resetNarrAudio();   // 稿子变了，旧预览音频作废
   } catch (e) { $('#narStatus').textContent = '生成失败：' + e.message; }
   $('#narGen').disabled = false;
 }
@@ -316,6 +365,7 @@ async function saveNarration() {
   try {
     await api('POST', `/api/projects/${pid}/version/${curSeq}/narration`, { text: $('#narText').value });
     $('#narStatus').textContent = '✓ 已保存 · 导出配音时会用这版';
+    resetNarrAudio();   // 稿子变了，旧预览音频作废，需重新生成
   } catch (e) { $('#narStatus').textContent = '保存失败：' + e.message; }
 }
 
@@ -380,7 +430,10 @@ function bindUI() {
   document.querySelectorAll('.tab').forEach((t) => t.onclick = () => switchTab(t.dataset.tab));
   // 自定义播放控制（替代原生 controls）
   $('#narGen').onclick = genNarration;
+  $('#narPause').onclick = insertPause;
   $('#narSave').onclick = saveNarration;
+  $('#narAudio').onclick = genPreviewAudio;
+  $('#narrToggle').onclick = () => setNarrAudio(!narrAudioOn);
   $('#attachBtn').onclick = () => { if (!roMode) $('#fileInput').click(); };
   $('#fileInput').onchange = (e) => { const f = e.target.files[0]; if (f) uploadAsset(f); e.target.value = ''; };
   $('#playBtn').onclick = () => { if (!curVideo) return; curVideo.paused ? curVideo.play() : curVideo.pause(); };
@@ -612,7 +665,7 @@ function setReadonly(on) {
   $('#input').placeholder = on ? '此项目已归档（只读），恢复后可编辑'
     : '描述你想要的动画，或继续修改…（例：把公式高亮成黄色）';
   $('#quickChips').style.display = on ? 'none' : '';
-  ['#narText', '#narGen', '#narSave', '#attachBtn'].forEach((s) => { const e = $(s); if (e) e.disabled = on; });
+  ['#narText', '#narGen', '#narPause', '#narSave', '#narAudio', '#attachBtn'].forEach((s) => { const e = $(s); if (e) e.disabled = on; });
 }
 
 function sparkSvg() { return `<img src="logo.png" alt="">`; }

@@ -256,6 +256,21 @@ async def post_message(pid: str, m: MessageIn):
     return {"ok": True, "queue_position": pos}
 
 
+def _narr_preview_mp3(pid: str, seq: int) -> Path:
+    """解说稿预览音频固定路径（重生成即覆盖，不按次堆积）。"""
+    return config.project_dir(pid) / "previews" / f"v{seq}_narr.mp3"
+
+
+def _del_narr_preview(pid: str, seq: int) -> None:
+    """删掉过时的预览音频（改稿/导出后调用）。"""
+    p = _narr_preview_mp3(pid, seq)
+    try:
+        if p.exists():
+            p.unlink()
+    except OSError:
+        pass
+
+
 @app.post("/api/projects/{pid}/version/{seq}/narration")
 def save_narration(pid: str, seq: int, n: NarrationIn):
     v = store.get_version(pid, seq)
@@ -265,7 +280,27 @@ def save_narration(pid: str, seq: int, n: NarrationIn):
     if proj and proj.get("archived"):
         raise HTTPException(409, "项目已归档（只读）")
     store.set_narration(pid, seq, n.text.strip())
+    _del_narr_preview(pid, seq)        # 稿子变了，旧预览音频作废
     return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/version/{seq}/narration/audio")
+async def narration_audio(pid: str, seq: int):
+    """合成当前解说稿为预览音频（含 [停顿X] 自动插静音），供预览区试听。"""
+    from . import tts
+    v = store.get_version(pid, seq)
+    if not v:
+        raise HTTPException(404, "版本不存在")
+    text = (v.get("narration") or "").strip()
+    if not text:
+        raise HTTPException(400, "还没有解说稿，先生成或填写再试听")
+    out = _narr_preview_mp3(pid, seq)
+    if not await tts.synth(text, out):
+        raise HTTPException(502, "配音合成失败（需联网；大陆网络可能要走代理）")
+    dur = await tts._duration(out)
+    bust = int(out.stat().st_mtime)
+    return {"url": "/media/" + str(out.relative_to(config.DATA_DIR)) + f"?t={bust}",
+            "duration": dur}
 
 
 @app.post("/api/projects/{pid}/version/{seq}/narration/generate")
@@ -286,6 +321,7 @@ async def generate_narration(pid: str, seq: int):
                           code=v.get("code") or "", total_dur=dur)
     if text:
         store.set_narration(pid, seq, text)
+        _del_narr_preview(pid, seq)        # 新稿子，旧预览音频作废
     return {"text": text, "storyboard": storyboard}
 
 

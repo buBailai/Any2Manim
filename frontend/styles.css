@@ -153,8 +153,10 @@ svg.ico{stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stro
 .nar-text{flex:1;min-height:120px;border:1px solid var(--line);border-radius:11px;padding:13px 15px;font-family:var(--sans);font-size:13.5px;line-height:1.8;color:var(--ink);background:var(--panel-2);outline:none;resize:none}
 .nar-text:focus{border-color:var(--accent)}
 .nar-text:disabled{background:var(--panel-2);color:var(--muted)}
-.nar-actions{display:flex;align-items:center;gap:10px;margin-top:12px}
+.nar-actions{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .nar-status{font-size:12px;color:var(--ok)}
+.nar-hint{font-size:11.5px;color:var(--muted);margin:9px 2px 2px;line-height:1.55}
+.nar-hint code{font-family:var(--mono);font-size:11px;background:var(--accent-soft);padding:1px 5px;border-radius:5px;color:var(--accent)}
 .ctrl{height:52px;background:rgba(7,8,13,.97);border-top:1px solid rgba(255,255,255,.055);display:flex;align-items:center;gap:15px;padding:0 18px;color:#9A9FAC;z-index:3;flex-shrink:0}
 .ctrl .play{width:32px;height:32px;border-radius:50%;background:linear-gradient(140deg,var(--accent),var(--accent-vio));color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:var(--sh-accent);cursor:pointer}
 .ctrl .play svg{width:13px;height:13px;fill:#fff;stroke:none}
@@ -167,6 +169,8 @@ svg.ico{stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stro
 .track.dragging .thumb{box-shadow:0 0 0 5px rgba(123,123,230,.28),0 1px 4px rgba(0,0,0,.5)}
 .ctrl .t{font-size:11.5px;font-family:var(--mono)}
 .ctrl .q{font-size:11px;color:#D6D9E2;background:rgba(255,255,255,.075);border-radius:8px;padding:5px 10px}
+.narr-toggle{font-size:11px;color:#D6D9E2;background:rgba(255,255,255,.075);border-radius:8px;padding:5px 10px;cursor:pointer;user-select:none;white-space:nowrap}
+.narr-toggle.on{background:var(--accent);color:#fff}
 
 .timeline{height:98px;flex-shrink:0;background:var(--panel);border-top:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 26px;overflow-x:auto}
 .tl-label{font-family:var(--serif);font-size:12.5px;color:var(--subtle);flex-shrink:0;line-height:1.45;font-weight:500}

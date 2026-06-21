@@ -5,6 +5,7 @@ generate()：planning → codegen → 自愈循环（ast→dry_run→分类→�
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -18,15 +19,90 @@ Emit = Callable[..., Awaitable[None]]
 
 
 # ── 提示词 ──────────────────────────────────────────────────
-def _load_cheatsheet() -> str:
-    p = config.PROMPTS_DIR / "manim_api_cheatsheet.md"
+def _frag(name: str) -> str:
+    p = config.PROMPTS_DIR / name
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+def _load_cheatsheet() -> str:
+    return _frag("manim_api_cheatsheet.md")
+
+
+# Phase 1 注入片段：教学原则 + 镜头动作语法 + 公式拆解规范
+_TEACHING = _frag("teaching_principles.md")
+_CAMERA = _frag("a2m_camera_grammar.md")
+_FORMULA = _frag("formula_design_rules.md")
+
+
+# 旧的自由文本分镜（保留作降级兜底说明，现主路径用 SYS_PLAN 产结构化计划）
 SYS_STORYBOARD = (
     "你是教学动画分镜师。把老师的一句话需求拆成 3~5 步自然语言分镜计划，"
     "每步说清画面上出现什么、怎么动。只输出分镜，不要写代码。语言简洁。"
 )
+
+
+# 结构化教学镜头计划（先教学后符号；一次调用产可验证合同，codegen 据此翻译）
+SYS_PLAN = (
+    "你是教学动画的【教学设计 + 镜头规划】师。把老师的一句话需求，规划成一段"
+    "「先建立直觉、再引入符号」的教学镜头计划。严格遵守下面的教学原则与镜头动作语法。\n\n"
+    f"{_TEACHING}\n\n{_CAMERA}\n\n{_FORMULA}\n\n"
+    "只输出一个 JSON 对象（不要 markdown 围栏、不要解释、不要多余文字），结构如下：\n"
+    "{\n"
+    '  "brief": {"topic": "主题", "audience": "学段/对象", "core_claim": "这条动画要让学生明白的一句话", "final_takeaway": "结尾留给学生的一句话"},\n'
+    '  "shots": [\n'
+    '    {"id": "shot_01", "teaches": "这段教什么(一句)", "actions": [{"verb": "HEADLINE", "text": "..."}, {"verb": "SHOW", "desc": "画面出现什么"}, {"verb": "CAPTION", "text": "底部解说一句"}], "seconds": 8}\n'
+    "  ],\n"
+    '  "formulas": [{"latex": "v = g t", "parts": ["v","=","g","t"], "plain": "速度=重力加速度×时间", "terms": [{"i": 0, "means": "速度"}, {"i": 2, "means": "重力加速度"}, {"i": 3, "means": "时间"}]}\n'
+    "}\n"
+    "规则：3~6 个 shot；第一个 shot 必须含 HEADLINE 动作，最后一个 shot 必须含 TAKEAWAY 动作；"
+    "公式必须先有视觉 shot 铺垫，再用 REVEAL_FORMULA；不涉及公式就省略 formulas 字段。"
+    "动作的内容写在 text 或 desc 字段里。"
+)
+
+
+def _extract_json(text: str) -> "Optional[dict]":
+    """从模型输出里抠出 JSON 对象（去围栏、取最外层 {}）；非法或无 shots 返回 None。"""
+    s = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.IGNORECASE).strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        obj = json.loads(s[i:j + 1])
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(obj, dict) and isinstance(obj.get("shots"), list) and obj["shots"]:
+        return obj
+    return None
+
+
+def _format_plan(plan: dict) -> str:
+    """把结构化计划渲染成既给老师看、又喂 codegen 的文本。"""
+    b = plan.get("brief") or {}
+    lines: list[str] = []
+    topic, aud = (b.get("topic") or "").strip(), (b.get("audience") or "").strip()
+    if topic:
+        lines.append(f"主题：{topic}" + (f"（面向 {aud}）" if aud else ""))
+    if b.get("core_claim"):
+        lines.append(f"核心：{b['core_claim']}")
+    lines.append("镜头：")
+    for idx, sh in enumerate(plan.get("shots") or [], 1):
+        sid = sh.get("id") or f"shot_{idx:02d}"
+        secs = sh.get("seconds")
+        lines.append(f"{idx}. [{sid}｜教：{sh.get('teaches','')}]"
+                     + (f"（约 {secs}s）" if secs else ""))
+        for a in sh.get("actions") or []:
+            content = a.get("text") or a.get("desc") or a.get("description") or ""
+            lines.append(f"   - {a.get('verb','')}" + (f"：{content}" if content else ""))
+    if plan.get("formulas"):
+        lines.append("公式：")
+        for f in plan["formulas"]:
+            latex = f.get("latex") or " ".join(f.get("parts") or [])
+            terms = "、".join(t.get("means", "") for t in (f.get("terms") or []) if t.get("means"))
+            seg = f"- {latex}：{f.get('plain','')}"
+            lines.append(seg + (f"（逐项：{terms}）" if terms else ""))
+    if b.get("final_takeaway"):
+        lines.append(f"收尾（TAKEAWAY）：{b['final_takeaway']}")
+    return "\n".join(lines)
 
 
 # 本环境亲测可渲的范例（few-shot）：示范好风格——分步注释、helper、MathTex 正确用法
@@ -64,14 +140,28 @@ def _assets_hint(asset_names: Optional[list[str]]) -> str:
 
 def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
     return (
-        "你是 ManimCE 动画工程师。根据需求和分镜，生成一个可直接渲染的 ManimCE 动画。\n"
-        f"严格遵守以下《API 速查/避坑清单》——与之冲突即错误：\n\n{_load_cheatsheet()}\n\n"
+        "你是 ManimCE 动画工程师。把下面给出的【教学镜头计划】逐 shot 翻译成可直接渲染的 "
+        "ManimCE 动画——你的任务是【忠实翻译这份计划】，把每个动作落成对应画面，而不是自由发挥。\n"
+        f"遵守以下教学原则与镜头动作语法：\n\n{_TEACHING}\n\n{_CAMERA}\n\n"
+        f"再严格遵守《API 速查/避坑清单》——与之冲突即错误：\n\n{_load_cheatsheet()}\n\n"
         "渲染环境已注入这些好默认与 helper，可直接使用（无需自己定义）：\n"
         "- 背景已是靛蓝深色；色板常量 A2M_ACCENT/A2M_VIO/A2M_CYAN/A2M_INK；\n"
-        "- a2m_title(text) 渐变标题、a2m_caption(text) 灰色注释、"
-        "a2m_highlight(mobj) 高亮、a2m_axes(**kw) 统一坐标系、"
-        "a2m_asset(name) 解析上传素材路径。\n"
-        "代码按 `# --- 第N步：... ---` 分段（便于后续定向编辑定位）。\n"
+        "- 基础：a2m_title(text)/a2m_caption(text)/a2m_highlight(mobj)/a2m_axes(**kw)/a2m_asset(name)。\n"
+        "- 【教学积木，优先用】（自带安全区/对齐，省得自己排版，能少很多布局翻车）：\n"
+        "  a2m_headline(text) 置顶标题；a2m_safe_caption(text) 底部安全区解说；\n"
+        "  a2m_takeaway(text) 结论卡；a2m_formula_with_caption(latex, 大白话) 公式+注解；\n"
+        "  a2m_term_tour(mathtex, [(项下标, 说明), ...]) 公式逐项小注（mathtex 需用 MathTex(\"a\",\"+\",\"b\") 分项）；\n"
+        "  a2m_compare_layout(左, 右, 左标题, 右标题) 左右对比；a2m_vt_graph(t_max, v_max) 速度-时间坐标系；\n"
+        "  a2m_number_line(...) 数轴；a2m_timeline([标签...]) 横向时间轴。\n"
+        "- 镜头动作尽量映射到上述积木：HEADLINE→a2m_headline、CAPTION→a2m_safe_caption、"
+        "TAKEAWAY→a2m_takeaway、REVEAL_FORMULA→a2m_formula_with_caption、TERM_TOUR→a2m_term_tour、"
+        "COMPARE→a2m_compare_layout、PLOT→a2m_vt_graph/a2m_axes，少从零排版。\n"
+        "⚠️【完整翻译，严禁偷懒】必须实现计划里的【每一个 shot 和每一个动作】：\n"
+        "- 每个 shot 对应一段代码，开头用注释 `# shot_01：<这段教什么>` 标出，按顺序全部落地，不能跳过任何 shot；\n"
+        "- 文字类动作和视觉动作【同等重要、都要实现】：HEADLINE 要真的画出标题、CAPTION 要画出底部解说、"
+        "REVEAL_FORMULA 要用 MathTex 画出公式、TERM_TOUR 要逐项 Indicate+旁注、TAKEAWAY 要画出结论文字；\n"
+        "- 严禁「只画最有趣的那个图形（如只画一条曲线）就结束」而省略标题/解说/公式/对比/结论；\n"
+        "- 每个 shot 至少有一次 self.play；输出前自检：计划里每个 shot、每个 HEADLINE/CAPTION/公式/TAKEAWAY 是否都在代码里。\n"
         f"{_assets_hint(asset_names)}\n"
         f"参考范例（照此风格）：\n{_FEWSHOT}\n\n"
         f"只输出一个完整 Python 文件，含 `from manim import *` 和 "
@@ -81,10 +171,31 @@ def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
 
 SYS_FIX = (
     "你是 ManimCE 调试专家。下面的代码渲染报错了。请修复并返回"
-    "【完整可运行代码】（不是 diff、不要 markdown 围栏、不要解释）。"
-    "保持原意图，只改出错处。常见坑：ShowCreation→Create、TexMobject→MathTex、"
-    "manimlib→manim、把中文塞进 MathTex（应改用 Text）。"
+    "【完整可运行代码】（不是 diff、不要 markdown 围栏、不要解释）。\n"
+    "⚠️ 只修报错处，**必须保留原有的全部教学镜头与内容**——每个 shot、标题(HEADLINE)、"
+    "解说(CAPTION)、公式、逐项讲解、结论(TAKEAWAY)都要原样还在。"
+    "严禁为了让它跑通就删减镜头、把整片简化成只画一个图形。\n"
+    "常见坑：ShowCreation→Create、TexMobject→MathTex、manimlib→manim、"
+    "把中文塞进 MathTex（应改用 Text）。"
 )
+
+SYS_TEACH_REPAIR = (
+    "你是教学动画质检 + 修复师。下面这段 ManimCE 代码能渲染，但有教学质量问题。"
+    "请按【教学镜头计划】和指出的【问题】改进，返回【完整可运行代码】"
+    "（不是 diff、不要 markdown 围栏、不要解释）。\n"
+    "保留原有能用的部分，重点补齐缺失的视觉对象/动画/结论，"
+    "**只能让内容更完整、更像教学，绝不能简化成更少内容**。"
+    "优先用已注入的教学积木（a2m_headline/a2m_safe_caption/a2m_takeaway/"
+    "a2m_formula_with_caption/a2m_compare_layout/a2m_vt_graph 等）。"
+)
+
+
+def _teach_repair_prompt(code: str, plan: str, issues: "list[dict]") -> str:
+    issue_text = "\n".join(f"- {i['msg']}" for i in issues)
+    plan_block = f"教学镜头计划：\n{plan}\n\n" if plan else ""
+    return (f"{plan_block}发现的教学问题：\n{issue_text}\n\n"
+            f"当前代码：\n{code}\n\n请返回改进后的完整代码。")
+
 
 SYS_EDIT = (
     "你是 ManimCE 定向编辑器。给你当前完整代码与老师的修改要求，"
@@ -144,15 +255,17 @@ class GenResult:
     attempts: int = 0
     error: str = ""              # 失败时给老师的大白话
     env_missing: bool = False    # 环境缺依赖（区别于代码错）
+    warnings: list = field(default_factory=list)  # 教学质量提示（非阻塞，记录用）
 
 
-def _fix_prompt(code: str, tb: str, intent: str) -> str:
-    return (f"原始意图：{intent}\n\n出错代码：\n{code}\n\n"
-            f"精简报错：\n{tb}\n\n请返回修复后的完整代码。")
+def _fix_prompt(code: str, tb: str, intent: str, plan: str = "") -> str:
+    plan_block = f"教学镜头计划（必须完整保留其全部镜头与内容）：\n{plan}\n\n" if plan else ""
+    return (f"原始意图：{intent}\n\n{plan_block}出错代码：\n{code}\n\n"
+            f"精简报错：\n{tb}\n\n请返回修复后的完整代码：保留全部镜头与教学内容，只改出错处。")
 
 
 async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
-               attempt0: int = 0) -> GenResult:
+               attempt0: int = 0, plan: str = "") -> GenResult:
     """自愈循环：有界、会喊停、保住最后一个能渲的版本。
 
     时间预算从本函数开始计时（只算"验证+修"的耗时），不含上游 LLM 生成代码的延迟——
@@ -178,7 +291,7 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
             attempt += 1
             await emit("healing", attempt=attempt, reason="修正语法")
             code = render.extract_code(
-                llm.complete(SYS_FIX, _fix_prompt(code, serr, intent),
+                llm.complete(SYS_FIX, _fix_prompt(code, serr, intent, plan),
                              task="fix", temperature=0.3))
             continue
 
@@ -203,9 +316,10 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
         attempt += 1
         reason = "简化场景" if cls is ErrClass.HEAVY else "修正代码"
         await emit("healing", attempt=attempt, reason=reason)
-        extra = "\n注意：场景过重/超时，请大幅简化（减少元素/缩短时长）。" if cls is ErrClass.HEAVY else ""
+        extra = ("\n注意：场景过重/超时，请精简每个镜头的实现（减少元素数量、缩短动画时长），"
+                 "但仍保留全部 shot 与教学内容，不要删掉镜头。") if cls is ErrClass.HEAVY else ""
         code = render.extract_code(
-            llm.complete(SYS_FIX, _fix_prompt(code, res.traceback, intent) + extra,
+            llm.complete(SYS_FIX, _fix_prompt(code, res.traceback, intent, plan) + extra,
                          task="fix", temperature=0.3))
 
     return GenResult(False, code=last_good or code, attempts=attempt,
@@ -215,34 +329,68 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
 async def generate(description: str, llm: BaseLLM, emit: Emit,
                    prior_code: Optional[str] = None,
                    asset_names: Optional[list[str]] = None) -> GenResult:
-    """主入口：分镜 → 生成 → 自愈。prior_code 作为失败兜底锚点。"""
-    # 分镜（先规划后写码）
+    """主入口：结构化教学规划 → 翻译成代码 → 自愈。prior_code 作为失败兜底锚点。
+
+    规划改为一次产出结构化教学镜头计划（JSON）；解析失败则把原文当自由文本分镜兜底
+    （保护弱模型用户），整条链路仍只 2 次 LLM 调用，不增延迟。
+    """
     await emit("planning")
     try:
-        storyboard = llm.complete(SYS_STORYBOARD, description, task="storyboard",
-                                  temperature=0.4)
+        raw_plan = llm.complete(SYS_PLAN, f"老师的需求：{description}",
+                                task="plan", temperature=0.4)
     except Exception as e:  # noqa: BLE001
         return GenResult(False, code=prior_code or "", error=f"LLM 调用失败：{e}")
 
+    plan_dict = _extract_json(raw_plan)
+    storyboard = _format_plan(plan_dict) if plan_dict else raw_plan.strip()
+
     await emit("storyboard", text=storyboard)
 
-    # 生成代码
+    # 生成代码：把教学镜头计划逐 shot 翻译成 Manim
     await emit("generating")
     try:
         raw = llm.complete(_sys_codegen(asset_names),
-                           f"需求：{description}\n\n分镜：\n{storyboard}",
+                           f"需求：{description}\n\n教学镜头计划：\n{storyboard}",
                            task="codegen", temperature=0.2)
     except Exception as e:  # noqa: BLE001
         return GenResult(False, code=prior_code or "", storyboard=storyboard,
                          error=f"LLM 调用失败：{e}")
     code = render.extract_code(raw)
 
-    # 自愈
-    result = await heal(code, description, llm, emit)
+    # 自愈（带上教学镜头计划，修报错时不至于把镜头简化掉）
+    result = await heal(code, description, llm, emit, plan=storyboard)
     result.storyboard = storyboard
+    if result.ok:
+        await _teach_pass(result, description, storyboard, llm, emit)  # 「能教」质检 + 一次教学修复
     if not result.ok and prior_code:
         result.code = prior_code  # 保住最后一个能渲的版本
     return result
+
+
+async def _teach_pass(result: GenResult, intent: str, plan: str,
+                      llm: BaseLLM, emit: Emit) -> None:
+    """对已渲通过的代码做「能教」静态检查：block 级做一次教学修复（有界、失败回滚），warn 级仅记录。"""
+    issues = render.teachability_issues(result.code, intent)
+    result.warnings = [i["msg"] for i in issues if i.get("severity") == "warn"]
+    blocking = [i for i in issues if i.get("severity") == "block"]
+    if not blocking:
+        return
+    await emit("teach_repair", issues=[i["key"] for i in blocking])
+    try:
+        raw = llm.complete(SYS_TEACH_REPAIR,
+                           _teach_repair_prompt(result.code, plan, blocking),
+                           task="fix", temperature=0.3)
+    except Exception:  # noqa: BLE001
+        return
+    code2 = render.extract_code(raw)
+    ok, _ = render.syntax_check(code2)
+    if not ok:
+        return
+    v = await render.dry_run(code2)
+    # 仅当修复版能渲、且不再有 block 级问题才采用，否则保留原能渲版本
+    if v.ok and not [i for i in render.teachability_issues(code2, intent)
+                     if i.get("severity") == "block"]:
+        result.code = code2
 
 
 async def edit(prior_code: str, instruction: str, llm: BaseLLM, emit: Emit) -> Optional[GenResult]:

@@ -55,6 +55,40 @@ def syntax_check(code: str) -> tuple[bool, str]:
     return True, ""
 
 
+# 「能教」静态检查（Phase 3）：零 LLM、纯源码规则，发现「能跑但不像教学」的问题。
+# 只在代码已通过 dry_run 后跑；block 级会触发一次教学修复，warn 级仅记录。
+_GEOMETRY_TOKENS = (
+    "Circle", "Square", "Rectangle", "RoundedRectangle", "Polygon", "Triangle",
+    "Line", "Arrow", "DoubleArrow", "Vector", "Dot", "Angle", "Brace", "DashedVMobject",
+    "Axes", "NumberPlane", "NumberLine", "ParametricFunction", "FunctionGraph",
+    "ImageMobject", "SVGMobject", ".plot(", "a2m_axes", "a2m_vt_graph", "a2m_timeline",
+    "a2m_number_line", "a2m_compare_layout",
+)
+
+
+def teachability_issues(code: str, user_prompt: str = "") -> list[dict]:
+    """返回教学质量问题列表：[{key, severity('block'|'warn'), msg}]。空 = 没发现问题。"""
+    issues: list[dict] = []
+    has_visual = any(tok in code for tok in _GEOMETRY_TOKENS)
+    has_text = ("Text(" in code or "MathTex(" in code or "a2m_title" in code
+                or "a2m_headline" in code or "a2m_caption" in code)
+    if has_text and not has_visual:
+        issues.append({"key": "generic_title_card_only", "severity": "block",
+                       "msg": "整片只有文字、没有任何图形/坐标/图像——像 PPT 标题卡，不是教学动画。"
+                              "请按教学镜头计划补上真正的视觉对象与动画（图形/坐标系/运动）。"})
+    if "a2m_takeaway" not in code and not re.search(r"结论|总结|要点|记住|takeaway", code, re.I):
+        issues.append({"key": "no_final_takeaway", "severity": "warn",
+                       "msg": "结尾没有明确结论（TAKEAWAY）。"})
+    if re.search(r"to_edge\(\s*DOWN\s*\)", code):
+        issues.append({"key": "subtitle_zone_occupied", "severity": "warn",
+                       "msg": "有元素 to_edge(DOWN) 未留 buff，可能贴到底部字幕安全区。"})
+    plays, waits = code.count("self.play"), code.count("self.wait")
+    if plays >= 6 and waits == 0:
+        issues.append({"key": "too_fast_pacing", "severity": "warn",
+                       "msg": "几乎没有停顿（self.wait），节奏可能过快。"})
+    return issues
+
+
 _EXC_RE = re.compile(r"\w*(?:Error|Exception|Warning)\s*:")
 
 
