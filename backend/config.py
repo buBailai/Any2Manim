@@ -2,8 +2,48 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
+
+
+# ── LaTeX 可用性（MathTex 公式必须；自适应：本机/内置都能用就用，否则降级 Text）──
+_latex_cache: "bool | None" = None
+
+
+def _bundled_latex_bin() -> "object":
+    """免安装包把精简 TeX(TinyTeX) 放在 app 同级的 tinytex/ 下，返回其 bin 目录；没有则 None。
+
+    TeX Live 是相对路径布局、可移植，只要把 bin 目录加进 PATH，latex/dvisvgm 就能自洽找到
+    texmf-dist。dev/Mac 上没有该目录 → 直接 None，不影响本机已装的系统 LaTeX。
+    """
+    root = Path(__file__).resolve().parent.parent.parent       # 免安装包根 = app 的上一级
+    for sub in ("tinytex/bin/windows", "tinytex/bin/win32",
+                "tinytex/bin/universal-darwin", "tinytex/bin/x86_64-linux"):
+        d = root / sub
+        if d.is_dir() and (list(d.glob("latex*")) or list(d.glob("xelatex*"))):
+            return d
+    return None
+
+
+def _inject_bundled_latex() -> None:
+    """启动时把内置 TeX 的 bin 目录前置进 PATH，让渲染子进程的 latex/dvisvgm 可被找到。"""
+    d = _bundled_latex_bin()
+    if d is not None:
+        cur = os.environ.get("PATH", "")
+        if str(d) not in cur:
+            os.environ["PATH"] = str(d) + os.pathsep + cur
+
+
+_inject_bundled_latex()
+
+
+def has_latex() -> bool:
+    """本机能否渲染 MathTex 公式（需 latex + dvisvgm）。结果缓存，避免反复探测。"""
+    global _latex_cache
+    if _latex_cache is None:
+        _latex_cache = bool(shutil.which("latex") and shutil.which("dvisvgm"))
+    return _latex_cache
 
 # ── 目录约定 ──────────────────────────────────────────────
 APP_DIR = Path(__file__).resolve().parent.parent          # .../Any2Manim/app

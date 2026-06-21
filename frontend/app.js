@@ -159,6 +159,7 @@ function handleEvent(ev) {
     case 'planning': setStatus('spin', '正在规划分镜…'); logLine('info', '▸ 规划分镜'); break;
     case 'storyboard': logLine('info', ev.text || ''); break;
     case 'generating': setStatus('spin', '正在生成动画代码…'); logLine('info', '▸ 生成代码'); break;
+    case 'code_draft': showCode(ev.code); logLine('info', '▸ 代码已生成，正在验证/修正（可切「代码」tab 查看）'); break;
     case 'verifying': setStatus('spin', '正在验证代码能否运行…'); logLine('info', `▸ 验证渲染 (dry-run) #${ev.attempt||0}`); break;
     case 'healing': setStatus('spin', `正在修正…（第 ${ev.attempt} 次 · ${ev.reason||''}）`); logLine('warn', `↻ 自愈：${ev.reason} (#${ev.attempt})`); break;
     case 'rendering':
@@ -199,8 +200,11 @@ function onFailed(ev) {
   setStatus('fail', ev.error || '生成失败');
   if (ev.env_missing) logLine('err', '✗ 环境缺依赖（非代码问题）');
   else logLine('err', '✗ ' + (ev.error || '失败'));
+  logLine('info', '这次的代码已保留：可切「代码」tab 查看，或直接在左侧继续说「把X改成Y」，会在这次基础上继续调整（不必从头重来）。');
   setBadge('未成功');
   busy = false; $('#sendBtn').disabled = false;
+  if (ev.code) showCode(ev.code);    // 直接亮出失败版代码，避免被 refreshProject 覆盖成空
+  refreshProject().catch(() => {});   // 让失败版本出现在时间线，可点开看代码
 }
 
 function onExportReady(ev) {
@@ -380,7 +384,10 @@ async function refreshProject() {
   const data = await api('GET', `/api/projects/${pid}`);
   renderTimeline(data.versions, data.project.current_version);
   const cur = data.versions.find((v) => v.seq === data.project.current_version);
-  if (cur) { curSeq = cur.seq; const v = await api('GET', `/api/projects/${pid}/version/${cur.seq}`); showCode(v.code); $('#exportBtn').disabled = false; renderNarrationPane(v); }
+  // 若最新一版是失败版，别用旧的「当前版」代码覆盖刚亮出的失败代码
+  const newest = data.versions[data.versions.length - 1];
+  const failedNewest = newest && newest.status === 'failed';
+  if (cur) { curSeq = cur.seq; const v = await api('GET', `/api/projects/${pid}/version/${cur.seq}`); if (!failedNewest) showCode(v.code); $('#exportBtn').disabled = false; renderNarrationPane(v); }
 }
 function renderTimeline(versions, current) {
   const tl = $('#timeline');
@@ -396,10 +403,16 @@ function renderTimeline(versions, current) {
   });
 }
 async function onVersionClick(v) {
-  if (v.status !== 'ok') return;
-  await api('POST', `/api/projects/${pid}/revert`, { seq: v.seq });
-  await loadVersionBySeq(v.seq);
-  await refreshProject();
+  if (v.status === 'ok') {
+    await api('POST', `/api/projects/${pid}/revert`, { seq: v.seq });
+    await loadVersionBySeq(v.seq);
+    await refreshProject();
+  } else {
+    // 失败版：不回退，但展示其代码，方便查看 / 在此基础上继续改
+    const full = await api('GET', `/api/projects/${pid}/version/${v.seq}`);
+    showCode(full.code); switchTab('code');
+    logLine('info', `已显示 v${v.seq}（失败版）的代码。可在左侧直接继续说「把X改成Y」在此基础上调整。`);
+  }
 }
 async function loadVersionBySeq(seq) {
   const v = await api('GET', `/api/projects/${pid}/version/${seq}`);

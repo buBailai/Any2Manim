@@ -91,7 +91,7 @@ async def _run_generation(pid: str, prompt: str) -> None:
         await broker.publish(pid, {"type": ev, "seq": seq, **data})
 
     await emit("version_start", demo=llm.demo)
-    prior = store.current_code(pid)
+    prior = store.latest_code(pid)   # 含失败版：失败后老师可在这次尝试基础上继续改
     asset_names = _prepare_assets(pid)
 
     result = await engine.respond(prompt, llm, emit, prior_code=prior,
@@ -106,7 +106,8 @@ async def _run_generation(pid: str, prompt: str) -> None:
                              heal_attempts=result.attempts, error=result.error)
         msg = result.error or "生成失败"
         store.add_message(pid, "ai", msg, version_seq=seq)
-        await emit("failed", error=msg, env_missing=result.env_missing)
+        await emit("failed", error=msg, env_missing=result.env_missing,
+                   code=result.code or "")
         return
 
     pdir = config.project_dir(pid)
@@ -129,7 +130,7 @@ async def _run_generation(pid: str, prompt: str) -> None:
                              heal_attempts=result.attempts,
                              error="预览渲染失败：" + (pr.traceback[:120] or "未知"))
         store.add_message(pid, "ai", "预览渲染失败，可换个说法重试。", version_seq=seq)
-        await emit("failed", error="预览渲染失败")
+        await emit("failed", error="预览渲染失败", code=result.code or "")
         return
 
     store.finish_version(pid, seq, status="ok", code=result.code,

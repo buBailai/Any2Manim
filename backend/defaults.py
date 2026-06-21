@@ -8,12 +8,31 @@
 from __future__ import annotations
 
 # 与前端画布同款靛蓝深色，观感统一
-PREAMBLE = '''from manim import *
+# 注：本字符串用 r'''（原始串），因内含 \\usepackage / 行尾续行反斜杠，普通串会被当转义。
+PREAMBLE = r'''from manim import *
 import os as _os
 import numpy as np
 
 # ── Any2Manim 出厂好默认 ───────────────────────────────
 config.background_color = "#12141D"
+
+# 精简 + 自适应 TeX 模板：核心宏包(amsmath/amssymb/xcolor)必加，让免安装包内置的轻量
+# TinyTeX 也能渲染公式（manim 默认模板还要 physics/calligra/wasysym 等重型宏包，轻量
+# 发行版没有会直接失败）。其余增强宏包用 \IfFileExists 探测——装了才加载、没装就跳过，
+# 所以老师跑「安装LaTeX.bat」补装后这些会自动生效，没装也绝不报错。
+try:
+    config.tex_template = TexTemplate(preamble=(
+        r"\usepackage{amsmath}" "\n"
+        r"\usepackage{amssymb}" "\n"
+        r"\usepackage{xcolor}" "\n"
+        r"\IfFileExists{mathtools.sty}{\usepackage{mathtools}}{}" "\n"
+        r"\IfFileExists{mathrsfs.sty}{\usepackage{mathrsfs}}{}" "\n"
+        r"\IfFileExists{physics.sty}{\usepackage{physics}}{}" "\n"
+        r"\IfFileExists{siunitx.sty}{\usepackage{siunitx}}{}" "\n"
+        r"\IfFileExists{cancel.sty}{\usepackage{cancel}}{}" "\n"
+        r"\IfFileExists{esint.sty}{\usepackage{esint}}{}" "\n"))
+except Exception:
+    pass
 
 
 def a2m_asset(name):

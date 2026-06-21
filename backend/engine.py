@@ -126,6 +126,16 @@ class {config.SCENE_CLASS_NAME}(Scene):
         self.wait(0.6)'''
 
 
+# 无 LaTeX 版范例：公式用 Text（避免 MathTex）
+_FEWSHOT_NOTEX = _FEWSHOT.replace(
+    'eq = MathTex("y = x^2", font_size=48)',
+    'eq = Text("y = x²", font_size=44)')
+
+
+def _fewshot() -> str:
+    return _FEWSHOT if config.has_latex() else _FEWSHOT_NOTEX
+
+
 def _assets_hint(asset_names: Optional[list[str]]) -> str:
     if not asset_names:
         return ""
@@ -136,6 +146,29 @@ def _assets_hint(asset_names: Optional[list[str]]) -> str:
         "  引用方式：图片用 ImageMobject(a2m_asset(\"文件名\"))，"
         "SVG 用 SVGMobject(a2m_asset(\"文件名\"))；可对其 .scale()/.move_to()/.next_to() 定位、"
         "用 FadeIn/Create 让它出现、加标注。\n")
+
+
+# 稳优先：教学结构保住的前提下，优先可渲染性（v1.0.3 公式过激导致成功率掉，这里拉回）
+_ROBUST = (
+    "\n【稳优先 · 重要】在保证教学完整的前提下，优先用最稳、最简单的写法，"
+    "宁可朴素也要能渲染成功：\n"
+    "- 能用基础图形 / 坐标系 / 普通文字表达，就别上复杂构造；\n"
+    "- 只用常见且确定存在的 API（Create/Write/FadeIn/FadeOut/Transform/Indicate/Circumscribe 等），"
+    "不确定的一律不用；\n"
+    "- 避开易翻车写法：复杂 updater、对 MathTex 多部件做下标索引、罕见参数、过深的嵌套动画；\n"
+    "- 公式逐项讲解（TERM_TOUR）能稳就做，拿不准就退化为「一条完整公式 + 一句文字解释」，"
+    "别为炫技牺牲可渲染性。"
+)
+
+
+def _latex_directive() -> str:
+    if config.has_latex():
+        return ("\n【公式】本机可渲 LaTeX：公式用 MathTex，但保持简单、别对多部件做复杂下标操作；"
+                "中文一律用 Text。")
+    return ("\n⚠️【本机无 LaTeX —— 硬性约束】禁止使用 MathTex / Tex（用了会直接渲染失败）！"
+            "所有公式改用 Text 写：用 Unicode 上下标（x²、x³、aₙ、x₁）、用 / 表示分数、普通字符拼，"
+            "例如 Text(\"v = g·t\")、Text(\"y = x² - 2x - 3\")、Text(\"f(t) = a₀/2 + Σ(...)\")。"
+            "复杂公式就用文字描述 + 图形表达，不要强求排版。")
 
 
 def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
@@ -159,11 +192,12 @@ def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
         "⚠️【完整翻译，严禁偷懒】必须实现计划里的【每一个 shot 和每一个动作】：\n"
         "- 每个 shot 对应一段代码，开头用注释 `# shot_01：<这段教什么>` 标出，按顺序全部落地，不能跳过任何 shot；\n"
         "- 文字类动作和视觉动作【同等重要、都要实现】：HEADLINE 要真的画出标题、CAPTION 要画出底部解说、"
-        "REVEAL_FORMULA 要用 MathTex 画出公式、TERM_TOUR 要逐项 Indicate+旁注、TAKEAWAY 要画出结论文字；\n"
+        "REVEAL_FORMULA 要画出公式（按下方【公式】约束选 MathTex 或 Text）、TAKEAWAY 要画出结论文字；\n"
         "- 严禁「只画最有趣的那个图形（如只画一条曲线）就结束」而省略标题/解说/公式/对比/结论；\n"
         "- 每个 shot 至少有一次 self.play；输出前自检：计划里每个 shot、每个 HEADLINE/CAPTION/公式/TAKEAWAY 是否都在代码里。\n"
+        f"{_ROBUST}{_latex_directive()}\n"
         f"{_assets_hint(asset_names)}\n"
-        f"参考范例（照此风格）：\n{_FEWSHOT}\n\n"
+        f"参考范例（照此风格）：\n{_fewshot()}\n\n"
         f"只输出一个完整 Python 文件，含 `from manim import *` 和 "
         f"`class {config.SCENE_CLASS_NAME}(Scene)`，不要 markdown 围栏、不要解释。"
     )
@@ -290,12 +324,16 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
                 break
             attempt += 1
             await emit("healing", attempt=attempt, reason="修正语法")
-            code = render.extract_code(
+            fixed = render.extract_code(
                 llm.complete(SYS_FIX, _fix_prompt(code, serr, intent, plan),
                              task="fix", temperature=0.3))
+            if fixed.strip():
+                code = fixed          # 修复抽不出代码就保留原码，绝不清空
             continue
 
         # 2) 验证渲染（dry_run，只构建不出片）
+        if code.strip():
+            last_good = code          # 语法已过且非空 → 作为失败时的兜底代码
         await emit("verifying", attempt=attempt)
         res = await render.dry_run(code)
         if res.ok:
@@ -318,9 +356,11 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
         await emit("healing", attempt=attempt, reason=reason)
         extra = ("\n注意：场景过重/超时，请精简每个镜头的实现（减少元素数量、缩短动画时长），"
                  "但仍保留全部 shot 与教学内容，不要删掉镜头。") if cls is ErrClass.HEAVY else ""
-        code = render.extract_code(
+        fixed = render.extract_code(
             llm.complete(SYS_FIX, _fix_prompt(code, res.traceback, intent, plan) + extra,
                          task="fix", temperature=0.3))
+        if fixed.strip():
+            code = fixed          # 同理：修复无产出就保留原码
 
     return GenResult(False, code=last_good or code, attempts=attempt,
                      error="多次尝试仍未渲染成功。可以换个说法重述、退回上一版本、或查看代码手动调。")
@@ -336,7 +376,7 @@ async def generate(description: str, llm: BaseLLM, emit: Emit,
     """
     await emit("planning")
     try:
-        raw_plan = llm.complete(SYS_PLAN, f"老师的需求：{description}",
+        raw_plan = llm.complete(SYS_PLAN + _latex_directive(), f"老师的需求：{description}",
                                 task="plan", temperature=0.4)
     except Exception as e:  # noqa: BLE001
         return GenResult(False, code=prior_code or "", error=f"LLM 调用失败：{e}")
@@ -356,14 +396,16 @@ async def generate(description: str, llm: BaseLLM, emit: Emit,
         return GenResult(False, code=prior_code or "", storyboard=storyboard,
                          error=f"LLM 调用失败：{e}")
     code = render.extract_code(raw)
+    await emit("code_draft", code=code)   # 提前把代码亮出来，等待时「代码」tab 看得到产出
 
     # 自愈（带上教学镜头计划，修报错时不至于把镜头简化掉）
     result = await heal(code, description, llm, emit, plan=storyboard)
     result.storyboard = storyboard
     if result.ok:
         await _teach_pass(result, description, storyboard, llm, emit)  # 「能教」质检 + 一次教学修复
-    if not result.ok and prior_code:
-        result.code = prior_code  # 保住最后一个能渲的版本
+    elif not result.code and prior_code:
+        result.code = prior_code   # 极端情况(没产出任何代码)才退回上一版
+    # 失败时【保留这次尝试的代码】，便于老师在此基础上继续改（上一个能渲版本仍在时间线里可回退）
     return result
 
 

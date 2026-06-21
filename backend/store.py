@@ -141,6 +141,15 @@ def current_code(pid: str) -> Optional[str]:
     return v["code"] if v else None
 
 
+def latest_code(pid: str) -> Optional[str]:
+    """最近一版的代码（含失败版）——失败后老师也能在这次尝试的基础上继续改。"""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT code FROM versions WHERE project_id=? ORDER BY seq DESC LIMIT 1",
+            (pid,)).fetchone()
+    return (row["code"] if row and row["code"] else None)
+
+
 # ── 消息 ────────────────────────────────────────────────────
 def add_message(pid: str, role: str, content: str,
                 version_seq: Optional[int] = None) -> dict:
