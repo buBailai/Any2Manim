@@ -13,7 +13,7 @@
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/version-v1.0.4-5B5BD6" alt="v1.0.4">
+  <img src="https://img.shields.io/badge/version-v1.0.5-5B5BD6" alt="v1.0.5">
   <img src="https://img.shields.io/badge/manim-CE%200.20-orange" alt="ManimCE 0.20">
 </p>
 
@@ -35,7 +35,7 @@ Any2Manim 让**不会写代码的老师**也能做出专业的教学动画：你
 - **自然语言生成动画** —— 描述即生成，先分镜后写码，渲染引擎是 [ManimCE](https://www.manim.community/)（社区版）。
 - **教学优先的生成管线** —— 不是「一句话直接出代码」，而是先产出**结构化教学镜头计划**（先建立直觉、再引入符号；每镜头有明确「教什么」；公式自动拆项讲解），再忠实翻译成动画，并做「能教」质检。借鉴自 Math-To-Manim。
 - **自愈渲染循环** —— 代码渲染报错时自动把错误喂回模型修复，有界重试、会喊停、保住最后一个可渲版本，不把报错甩给老师。
-- **对话式定向编辑** —— 修改只产生最小代码改动，又快又稳。
+- **对话式定向编辑** —— 修改只产生最小代码改动，又快又稳；进度条标出**分镜章节点**，可**点选某一镜**把修改精准限定到那一镜，改不动也不会重做整片。
 - **好默认观感** —— 内置深色画布、统一色板/字体/留白、组件库，出片即好看。
 - **多格式导出** —— MP4（720p/1080p/4K）、GIF、封面图（可拖进度条任意选帧）。
 - **AI 配音 + 字幕** —— edge-tts 多音色、可调语速，AI 按分镜时长自动写旁白，字幕可烧录或外挂。

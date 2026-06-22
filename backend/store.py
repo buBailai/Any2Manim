@@ -113,6 +113,16 @@ def finish_version(pid: str, seq: int, *, status: str, code: str,
              heal_attempts, error, pid, seq))
 
 
+def delete_version(pid: str, seq: int) -> None:
+    """删掉某个版本（用于「定向编辑没定位到改处」时清掉本轮空 pending 版，不留废记录）。"""
+    with db.connect() as conn:
+        conn.execute("DELETE FROM versions WHERE project_id=? AND seq=?", (pid, seq))
+    try:
+        (config.project_dir(pid) / "code" / f"v{seq}.py").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def get_versions(pid: str) -> list[dict]:
     with db.connect() as conn:
         rows = conn.execute(
@@ -142,10 +152,16 @@ def current_code(pid: str) -> Optional[str]:
 
 
 def latest_code(pid: str) -> Optional[str]:
-    """最近一版的代码（含失败版）——失败后老师也能在这次尝试的基础上继续改。"""
+    """最近一版【有代码】的版本（含失败版）——失败后老师也能在这次尝试基础上继续改。
+
+    必须排除刚为本轮新建、code 还为空的 pending 版本：_run_generation 是先 create_version
+    （此时本轮 code 为空）再取 prior，若不排空会把本轮空版当成最近版 → prior=None →
+    respond 退化成「无旧代码」直接整段重生成、还丢了原始主题 → 改个需求变成做无关新主题。
+    """
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT code FROM versions WHERE project_id=? ORDER BY seq DESC LIMIT 1",
+            "SELECT code FROM versions WHERE project_id=? AND code IS NOT NULL AND code!=''"
+            " ORDER BY seq DESC LIMIT 1",
             (pid,)).fetchone()
     return (row["code"] if row and row["code"] else None)
 

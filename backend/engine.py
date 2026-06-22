@@ -237,6 +237,7 @@ SYS_EDIT = (
     "<<<<<<< SEARCH\n<精确粘贴要替换的旧片段>\n=======\n<新片段>\n>>>>>>> REPLACE\n"
     "SEARCH 必须与原代码逐字一致（含缩进）。不要输出完整代码、不要解释、不要 markdown 围栏。"
     "只改与要求相关的部分，其余原样不动。"
+    "务必保留代码里的 `# shot_NN：...` 分镜注释行，不要删改（它们用于分镜章节定位与精准编辑）。"
 )
 
 
@@ -289,6 +290,7 @@ class GenResult:
     attempts: int = 0
     error: str = ""              # 失败时给老师的大白话
     env_missing: bool = False    # 环境缺依赖（区别于代码错）
+    no_change: bool = False      # 定向编辑没定位到改处：保住旧版、请老师换说法（绝不重做整片）
     warnings: list = field(default_factory=list)  # 教学质量提示（非阻塞，记录用）
 
 
@@ -435,15 +437,20 @@ async def _teach_pass(result: GenResult, intent: str, plan: str,
         result.code = code2
 
 
-async def edit(prior_code: str, instruction: str, llm: BaseLLM, emit: Emit) -> Optional[GenResult]:
+async def edit(prior_code: str, instruction: str, llm: BaseLLM, emit: Emit,
+               scope_code: str = "", scope_note: str = "") -> Optional[GenResult]:
     """定向编辑：只产最小改动块，应用后走快校验+自愈。
 
+    scope_code/scope_note：限定到某一镜时，只把【那一镜的代码】给模型看（其余不展示），
+    模型的 search/replace 自然锚定在这一镜；apply 仍对全量代码（块的 SEARCH 是子串能唯一匹配）。
     返回 None 表示无法定向编辑（无块/匹配不上）→ 调用方降级整段重生成。
     """
     await emit("editing")
+    show = scope_code or prior_code
+    note = (scope_note + "\n") if scope_note else ""
     try:
         raw = llm.complete(SYS_EDIT,
-                           f"当前代码：\n{prior_code}\n\n修改要求：{instruction}",
+                           f"{note}当前代码：\n{show}\n\n修改要求：{instruction}",
                            task="edit", temperature=0.2)
     except Exception:  # noqa: BLE001
         return None
@@ -457,8 +464,10 @@ async def edit(prior_code: str, instruction: str, llm: BaseLLM, emit: Emit) -> O
 
     await emit("edited", applied=er.applied, blocks=er.blocks)
     result = await heal(er.code, instruction, llm, emit)
-    if not result.ok:
-        result.code = prior_code  # 编辑改坏了也保住上一版
+    # 自愈没完全通过也【保留这次应用了定向改动的代码】(heal 已保最近可用版)，交上层兜底渲染——
+    # 绝不丢掉这次编辑、更不能退回去当成新主题重做（重场景 dry_run 易超时，曾导致跑题重生成）。
+    if not result.code:
+        result.code = er.code
     return result
 
 
@@ -512,6 +521,61 @@ def estimate_durations(code: str) -> list[tuple[str, float]]:
     return out
 
 
+# ── 分镜（章节）拆分：codegen 给每个 shot 加了 `# shot_NN：教什么` 注释（铁律）──────
+_SHOT_RE = re.compile(r"^[ \t]*#\s*shot[_ ]?0*(\d+)\s*[:：|｜]?\s*(.*?)\s*$", re.IGNORECASE)
+
+
+def split_shots(code: str) -> list[dict]:
+    """按 `# shot_NN` 注释把代码切成各镜。返回 [{idx,label,code}]，无标记返回 []。
+
+    第一镜的代码块从文件开头算起（含 shot_01 之前的 setup），便于定向编辑取到完整上下文。
+    """
+    lines = code.splitlines()
+    marks = []
+    for i, ln in enumerate(lines):
+        m = _SHOT_RE.match(ln)
+        if m:
+            marks.append((i, int(m.group(1)), (m.group(2) or "").strip()))
+    if not marks:
+        return []
+    shots = []
+    for k, (ln_no, idx, label) in enumerate(marks):
+        start = 0 if k == 0 else ln_no
+        end = marks[k + 1][0] if k + 1 < len(marks) else len(lines)
+        block = "\n".join(lines[start:end]).strip("\n")
+        shots.append({"idx": idx, "label": label or f"第{idx}镜", "code": block})
+    return shots
+
+
+def _block_seconds(block: str) -> float:
+    secs = sum(float(m) for m in re.findall(r"run_time\s*=\s*([\d.]+)", block))
+    plays = len(re.findall(r"self\.play\(", block))
+    rts = len(re.findall(r"run_time\s*=", block))
+    secs += max(0, plays - rts) * 1.0
+    secs += sum(float(m) for m in re.findall(r"self\.wait\(\s*([\d.]+)\s*\)", block))
+    secs += len(re.findall(r"self\.wait\(\s*\)", block)) * 1.0
+    return secs
+
+
+def shot_chapters(code: str, total_dur: float = 0.0) -> list[dict]:
+    """各分镜的章节时间轴 [{idx,label,start,end}]，缩放到真实总时长使刻度落得准。"""
+    shots = split_shots(code)
+    if not shots:
+        return []
+    raws = [max(0.3, _block_seconds(s["code"])) for s in shots]
+    raw_total = sum(raws)
+    scale = (total_dur / raw_total) if (total_dur and raw_total) else 1.0
+    out, t = [], 0.0
+    for s, r in zip(shots, raws):
+        start = t
+        t += r * scale
+        out.append({"idx": s["idx"], "label": s["label"],
+                    "start": round(start, 2), "end": round(t, 2)})
+    if total_dur:
+        out[-1]["end"] = round(total_dur, 2)
+    return out
+
+
 # 中文配音实测速度（含公式/数字读得慢 + 句间停顿 + 字幕 lead-in）约 3.4 字/秒。
 # 取偏保守值，让配音宁可略短于视频（留白可接受），也别超出导致末帧冻结补时。
 CHARS_PER_SEC = 3.4
@@ -547,14 +611,51 @@ def narrate(prompt: str, storyboard: str, llm: BaseLLM,
         return ""
 
 
+# 老师明确想整段重做的措辞（命中才允许在有旧代码时重新生成，避免改着改着把片子重做了）
+_WANTS_REMAKE = re.compile(r"重做|重新生成|重新做|重新制作|从头(做|来|生成)|整段重|换个思路重|彻底重")
+
+
 async def respond(description: str, llm: BaseLLM, emit: Emit,
                   prior_code: Optional[str] = None,
+                  base_prompt: str = "",
+                  shot_index: Optional[int] = None,
                   asset_names: Optional[list[str]] = None) -> GenResult:
-    """统一入口：有可用旧代码→优先定向编辑（失败再整段重生成）；否则直接生成。"""
-    if prior_code:
-        edited = await edit(prior_code, description, llm, emit)
-        if edited is not None and edited.ok:
+    """统一入口：有可用旧代码→优先定向编辑；否则直接生成。
+
+    base_prompt = 项目最初的教学主题（重做时带上，保证不跑题）。
+    shot_index = 老师点选的镜头号（从 1 起）：把编辑限定到那一镜。
+
+    护栏（针对反复反馈：定向编辑失败别把整片重做了，会毁掉前面多轮成果）：
+      · 有旧代码且【不是明确要求重做】→ 只走定向编辑：限定某镜失败先【去掉限定对全片再试】
+        （老师可能点错镜）；仍改不动 → 保住旧版、提示换说法，**绝不重做整片**。
+      · 老师明确说「重做/重新生成」或【没有可用旧代码】→ 才整段重新生成。
+    """
+    if prior_code and not _WANTS_REMAKE.search(description or ""):
+        scope_code = scope_note = ""
+        if shot_index:
+            sh = next((s for s in split_shots(prior_code) if s["idx"] == shot_index), None)
+            if sh:
+                scope_code = sh["code"]
+                scope_note = (f"⚠️ 只修改【第{sh['idx']}镜：{sh['label']}】这一段，"
+                              f"其它镜头一律原样保留、绝不改动。")
+                await emit("editing_shot", idx=sh["idx"], label=sh["label"])
+        edited = await edit(prior_code, description, llm, emit,
+                            scope_code=scope_code, scope_note=scope_note)
+        if edited is None and scope_code:
+            # 限定某镜没改成（老师可能点错镜，要改的东西不在这镜）→ 去掉限定、对全片再试一次
+            await emit("editing")
+            edited = await edit(prior_code, description, llm, emit)
+        if edited is not None:        # 应用了改动块 → 用这版（哪怕自愈没全过，交上层兜底渲染），不重做
             return edited
-        await emit("regenerating")   # 定向编辑没成 → 降级整段重生成
-    return await generate(description, llm, emit, prior_code=prior_code,
+        # 仍没改成 → 【保住旧版，不重做整片】，请老师换个说法
+        return GenResult(False, code=prior_code, no_change=True,
+                         error="没能把这次修改定位到代码里——可能描述不够具体，或点选的镜头里没有要改的内容。"
+                               "请换个更具体的说法（如指出颜色/文字/位置），或取消/更换『改某一镜』的限定再试。"
+                               "（想整段重做，请在话里写明「重做」或新建项目。）")
+    # 无旧代码 或 明确要求重做 → 整段生成；有主题就带上保证不跑题
+    if prior_code:
+        await emit("regenerating")
+    gen_desc = (f"教学动画主题：{base_prompt}\n\n请在上一版动画的基础上做这个调整：{description}"
+                if (prior_code and base_prompt) else description)
+    return await generate(gen_desc, llm, emit, prior_code=prior_code,
                           asset_names=asset_names)

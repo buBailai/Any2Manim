@@ -42,6 +42,7 @@ class ProjectIn(BaseModel):
 
 class MessageIn(BaseModel):
     prompt: str
+    shot_index: Optional[int] = None   # 老师点选的分镜号（从1起）→ 把修改限定到那一镜
 
 
 class ExportIn(BaseModel):
@@ -115,44 +116,46 @@ def get_changelog():
 
 @app.get("/api/config")
 def get_config():
+    """返回激活厂商配置 + 各厂商的「已配置」状态（按厂商分别长期保存，切换不丢）。
+
+    providers: {厂商key: {configured, base_url, model}}——不回传 Key（安全），
+    供前端切到任一已配过的厂商时还原其地址/模型并显示「已保存」。
+    """
     from .llm import from_config
-    cfg = {}
-    if config.CONFIG_PATH.exists():
-        cfg = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
-    demo = getattr(from_config(cfg), "demo", True)
+    flat = config.active_flat()
+    demo = getattr(from_config(flat), "demo", True)
+    status = {}
+    for p, d in config.read_config().get("providers", {}).items():
+        fp = {"provider": p, "base_url": d.get("base_url", ""),
+              "api_key": d.get("api_key", ""), "model": d.get("model", "")}
+        status[p] = {"configured": not getattr(from_config(fp), "demo", True),
+                     "base_url": d.get("base_url", ""), "model": d.get("model", "")}
     return {"configured": not demo,
-            "provider": cfg.get("provider", ""),
-            "base_url": cfg.get("base_url", ""),
-            "model": cfg.get("model", ""),
-            "demo": demo}
+            "provider": flat["provider"],
+            "base_url": flat["base_url"],
+            "model": flat["model"],
+            "demo": demo,
+            "providers": status}
 
 
 @app.post("/api/config")
 def set_config(c: ConfigIn):
-    config.ensure_dirs()
-    cfg = c.model_dump()
-    # 合并：Key 留空时保留已存的（编辑模型/URL 不必重填 Key）
-    if not cfg.get("api_key") and config.CONFIG_PATH.exists():
-        old = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
-        if old.get("api_key"):
-            cfg["api_key"] = old["api_key"]
-    config.CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
-                                  encoding="utf-8")
+    # 按厂商分别保存（save_provider 内部：Key 留空保留该厂商原 Key），并设为激活。
+    config.save_provider(c.provider, c.base_url, c.api_key, c.model)
     from .llm import from_config
-    return {"ok": True, "demo": getattr(from_config(cfg), "demo", True)}
+    return {"ok": True, "demo": getattr(from_config(config.active_flat()), "demo", True)}
 
 
 @app.post("/api/config/test")
 def test_config(c: ConfigIn):
-    """连通性自检：用给定（或已存）配置发一条极小请求，回报成功/具体错误。"""
+    """连通性自检：用给定（或该厂商已存）配置发一条极小请求，回报成功/具体错误。"""
     from .llm import from_config, LLMError
     cfg = c.model_dump()
-    old = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8")) \
-        if config.CONFIG_PATH.exists() else {}
-    # 表单空字段用已存值补齐（Key 留空仍能测；只改模型也能测新模型）
+    # 表单空字段用【该厂商已存值】补齐（Key 留空仍能测；只改模型也能测新模型）
+    base = config.provider_flat(c.provider) if c.provider else config.active_flat()
     for k in ("base_url", "api_key", "model", "provider"):
-        if not cfg.get(k) and old.get(k):
-            cfg[k] = old[k]
+        if not cfg.get(k) and base.get(k):
+            cfg[k] = base[k]
     llm = from_config(cfg)
     if getattr(llm, "demo", False):
         return {"ok": False, "message": "未填 API Key —— 当前是演示模式（用内置范例，不调大模型）"}
@@ -228,6 +231,24 @@ def get_version(pid: str, seq: int):
     return v
 
 
+@app.get("/api/projects/{pid}/version/{seq}/chapters")
+async def get_chapters(pid: str, seq: int):
+    """该版本的分镜章节 [{idx,label,start,end}]——进度条章节点 + 点选镜头限定编辑都用它。
+
+    时间按代码估算并【缩放到预览视频真实时长】，刻度落得准（误差约 1 秒内）。
+    """
+    from . import engine, tts
+    v = store.get_version(pid, seq)
+    if not v or not v.get("code"):
+        return {"chapters": [], "duration": 0.0}
+    dur = 0.0
+    if v.get("preview_path"):
+        p = config.DATA_DIR / v["preview_path"]
+        if p.exists():
+            dur = await tts._duration(p)
+    return {"chapters": engine.shot_chapters(v["code"], dur), "duration": dur}
+
+
 @app.delete("/api/projects/{pid}")
 def delete_project(pid: str):
     if not store.get_project(pid):
@@ -251,8 +272,11 @@ async def post_message(pid: str, m: MessageIn):
         raise HTTPException(404, "项目不存在")
     if proj.get("archived"):
         raise HTTPException(409, "项目已归档（只读），恢复到项目列表后才能编辑")
-    store.add_message(pid, "user", m.prompt)
-    pos = await queue.submit_generation(pid, m.prompt)
+    # 限定某镜时，存进对话的消息带上「改第N镜：」前缀（方便老师事后复盘）；
+    # 真正喂给生成的仍是原始指令（范围由 shot_index 控制，不污染指令文本）。
+    shown = f"改第{m.shot_index}镜：{m.prompt}" if m.shot_index else m.prompt
+    store.add_message(pid, "user", shown)
+    pos = await queue.submit_generation(pid, m.prompt, m.shot_index)
     return {"ok": True, "queue_position": pos}
 
 

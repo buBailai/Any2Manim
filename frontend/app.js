@@ -18,6 +18,9 @@ async function api(method, path, body) {
 
 // ── 启动 ───────────────────────────────────────────────
 let PROVIDERS = {}, EXAMPLES_LIB = [];
+let _savedCfg = {};   // 最近一次 GET /api/config 的结果，供设置弹窗判断各厂商是否已配置
+let chapters = [];    // 当前版本分镜章节 [{idx,label,start,end}]
+let selectedShot = null;   // 老师点选要修改的分镜号（null=全片）
 async function boot() {
   bindUI();
   loadChangelog();
@@ -47,19 +50,27 @@ async function loadProviders() {
     PROVIDERS[p.key] = p;
     const o = document.createElement('option'); o.value = p.key; o.textContent = p.label; sel.appendChild(o);
   });
-  sel.onchange = () => applyProvider(sel.value, true);
+  sel.onchange = () => syncCfgForProvider(sel.value);
 }
 
-// 选厂商 → 自动填地址/默认模型/提示；fill=true 时覆盖 Base/模型（用户主动切换）
-function applyProvider(key, fill) {
+// 选厂商 → 按「该厂商是否已保存过」刷新表单（每个厂商各记各的 Key/地址/模型，长期保存）：
+//  · 该厂商已配过 → 还原它自己的 Base/模型，Key 占位显示「已保存」，状态行显示已保存；
+//  · 没配过       → 用该厂商预设，Key 占位回到 sk-...（提示需填）。
+// 这样保存厂商1→切厂商2→再切回厂商1，厂商1 的配置依然在、显示「已保存」。
+function syncCfgForProvider(key) {
   const p = PROVIDERS[key] || {};
+  const saved = (_savedCfg.providers && _savedCfg.providers[key]) || null;
+  const isSaved = !!(saved && saved.configured);
   $('#cfgHint').textContent = p.hint || '';
   $('#cfgKeyOpt').textContent = p.needs_key === false ? '（本地，可留空）' : '';
-  if (fill) {
-    $('#cfgBase').value = p.base_url || '';
-    $('#cfgModel').value = p.default_model || '';
-    $('#cfgKey').placeholder = p.needs_key === false ? '本地无需 Key，可留空' : 'sk-...';
-  }
+  $('#cfgKey').value = '';
+  $('#cfgBase').value = (saved && saved.base_url) || p.base_url || '';
+  $('#cfgModel').value = (saved && saved.model) || p.default_model || '';
+  const needsKey = p.needs_key !== false;
+  $('#cfgKey').placeholder = !needsKey ? '本地无需 Key，可留空'
+    : (isSaved ? '已保存 ••••••••（留空=不修改，重填=更新）' : 'sk-...');
+  if (isSaved) showCfgResult('ok', `已保存：${p.label || key}${saved.model ? ' · ' + saved.model : ''}`);
+  else $('#cfgResult').hidden = true;
 }
 
 // ── 项目 ───────────────────────────────────────────────
@@ -138,14 +149,16 @@ async function send(text) {
   if (!text.trim() || busy || !pid || roMode) return;
   busy = true; $('#sendBtn').disabled = true;
   const lib = $('#msgs').querySelector('.examples'); if (lib) lib.remove();
-  addMsg('user', text);
+  const shotIdx = selectedShot;                 // 本轮限定的分镜（发送后由新版本重置）
+  addMsg('user', shotIdx ? `改第${shotIdx}镜：${text}` : text);   // 对话里体现限定哪一镜，便于复盘
   aiBubble = addAi();
   setStatus('spin', '已收到，正在处理…');
   $('#statusLog').innerHTML = '';                       // 每次生成清空，日志只显示本轮
   logLine('info', `▸ 开始处理：${text.slice(0, 50)}`);
   $('#input').value = '';
+  if (shotIdx) logLine('info', `▸ 限定修改：第${shotIdx}镜`);
   try {
-    await api('POST', `/api/projects/${pid}/message`, { prompt: text });
+    await api('POST', `/api/projects/${pid}/message`, { prompt: text, shot_index: shotIdx });
   } catch (e) {
     setStatus('fail', '提交失败：' + e.message); busy = false; $('#sendBtn').disabled = false;
   }
@@ -154,6 +167,7 @@ async function send(text) {
 function handleEvent(ev) {
   switch (ev.type) {
     case 'editing': setStatus('spin', '正在定向编辑（只改相关部分）…'); logLine('info', '▸ 定向编辑'); break;
+    case 'editing_shot': logLine('info', `▸ 限定在第${ev.idx}镜·${ev.label || ''} 内修改`); break;
     case 'edited': logLine('ok', `✓ 应用 ${ev.applied}/${ev.blocks} 处改动块`); break;
     case 'regenerating': setStatus('spin', '改动较大，改为重新生成…'); logLine('warn', '↻ 降级：整段重生成'); break;
     case 'planning': setStatus('spin', '正在规划分镜…'); logLine('info', '▸ 规划分镜'); break;
@@ -166,9 +180,12 @@ function handleEvent(ev) {
       setStatus('spin', ev.stage === 'thumb' ? '正在渲染首帧…' : '正在渲染预览…');
       setBadge(ev.stage === 'thumb' ? '渲染首帧' : '渲染预览 · 480p');
       logLine('info', `▸ 渲染${ev.stage === 'thumb' ? '首帧' : '低清预览'}`); break;
+    case 'fallback_render': setStatus('spin', '自愈未完全通过，正在尽力渲染最后一版…');
+      logLine('warn', '↻ 自愈未完全通过 → 尽力渲染兜底（重场景给足时间，纯代码错会很快失败）'); break;
     case 'thumb_ready': if (ev.thumb_url) showThumb(ev.thumb_url); break;
     case 'preview_ready': onPreviewReady(ev); break;
     case 'failed': onFailed(ev); break;
+    case 'no_change': onNoChange(ev); break;
     case 'exporting': setBadge('导出高清中…'); logLine('info', '▸ 导出高清'); $('#exportBtn').disabled = true; break;
     case 'teach_repair': logLine('info', '▸ 画面偏简单，正在补充教学内容…'); break;
     case 'voicing': setBadge('合成配音中…'); logLine('info', '▸ 生成旁白 + edge-tts 配音'); break;
@@ -180,8 +197,9 @@ function handleEvent(ev) {
 }
 
 async function onPreviewReady(ev) {
-  const note = ev.attempts ? `渲染完成（自动修正 ${ev.attempts} 次）` : '渲染完成';
-  setStatus('done', note + (ev.demo ? ' · 演示模式' : ''));
+  const note = ev.best_effort ? '尽力渲染完成（未完全通过自检，可能有小瑕疵）'
+    : (ev.attempts ? `渲染完成（自动修正 ${ev.attempts} 次）` : '渲染完成');
+  setStatus(ev.best_effort ? 'warn' : 'done', note + (ev.demo ? ' · 演示模式' : ''));
   if (aiBubble) {
     const link = el('span', 'link'); link.textContent = '查看代码';
     link.onclick = () => switchTab('code');
@@ -193,9 +211,17 @@ async function onPreviewReady(ev) {
   setBadge('预览 · 480p'); logLine('ok', '✓ 渲染完成');
   showPreview(ev.preview_url);
   await refreshProject();
+  loadChapters(ev.seq != null ? ev.seq : curSeq);   // 新版本 → 重新算分镜章节（并重置选区）
   busy = false; $('#sendBtn').disabled = false; $('#exportBtn').disabled = false;
 }
 
+function onNoChange(ev) {
+  // 定向编辑没定位到改处：当前版本原样保留，不重做、不新增版本，提示换说法
+  setStatus('warn', '这次没有改动（原状保留）');
+  logLine('warn', '⚠ ' + (ev.error || '没能定位到要改的地方'));
+  setBadge('未改动');
+  busy = false; $('#sendBtn').disabled = false;
+}
 function onFailed(ev) {
   setStatus('fail', ev.error || '生成失败');
   if (ev.env_missing) logLine('err', '✗ 环境缺依赖（非代码问题）');
@@ -254,6 +280,7 @@ function setStatus(kind, text) {
   let icon = '';
   if (kind === 'spin') icon = '<span class="spin"></span>';
   else if (kind === 'done') icon = '<span class="done">✓</span>';
+  else if (kind === 'warn') icon = '<span class="done" style="color:#E0A53F">⚠</span>';
   else if (kind === 'fail') icon = '<span class="fail">✕</span>';
   aiStatus.innerHTML = icon + ' <span>' + text + '</span>';
 }
@@ -264,6 +291,8 @@ function resetCanvas() {
   $('#previewHolder').innerHTML = '<div class="empty-hint">在左侧描述一个动画，预览会出现在这里</div>';
   $('#codeBox').textContent = '// 生成后这里显示 Manim 代码';
   setBadge('就绪');
+  clearChapters();
+  curVideo = null;
 }
 function showThumb(url) {
   const h = $('#previewHolder');
@@ -410,7 +439,7 @@ async function onVersionClick(v) {
   } else {
     // 失败版：不回退，但展示其代码，方便查看 / 在此基础上继续改
     const full = await api('GET', `/api/projects/${pid}/version/${v.seq}`);
-    showCode(full.code); switchTab('code');
+    showCode(full.code); switchTab('code'); clearChapters();
     logLine('info', `已显示 v${v.seq}（失败版）的代码。可在左侧直接继续说「把X改成Y」在此基础上调整。`);
   }
 }
@@ -427,6 +456,7 @@ function loadVersion(v) {
   setBadge('预览 · 480p');
   renderStatusSummary(v);
   renderNarrationPane(v);
+  loadChapters(v.preview_path ? v.seq : null);   // 有预览才有章节
 }
 
 // ── tabs ───────────────────────────────────────────────
@@ -467,7 +497,8 @@ function bindUI() {
     try { track.setPointerCapture(e.pointerId); } catch (x) {}
     seekToX(e.clientX); e.preventDefault();
   });
-  track.addEventListener('pointermove', (e) => { if (dragging) seekToX(e.clientX); });
+  track.addEventListener('pointermove', (e) => { if (dragging) seekToX(e.clientX); chapterHover(e.clientX); });
+  track.addEventListener('pointerleave', () => { const tip = $('#chTip'); if (tip) tip.hidden = true; });
   const endDrag = () => { if (!dragging) return; dragging = false; track.classList.remove('dragging'); if (wasPlaying && curVideo) curVideo.play(); };
   track.addEventListener('pointerup', endDrag);
   track.addEventListener('pointercancel', endDrag);
@@ -536,20 +567,10 @@ function bindUI() {
 }
 async function openCfg() {
   const c = await api('GET', '/api/config');
+  _savedCfg = c || {};                        // 记住已保存配置，切厂商时据此判断「是否已配置」
   const key = c.provider && PROVIDERS[c.provider] ? c.provider : 'deepseek';
   $('#cfgProvider').value = key;
-  applyProvider(key, false);                 // 只刷新提示，不覆盖已存的 Base/模型
-  if (c.base_url || c.model) {               // 有已存配置则显示已存值
-    $('#cfgBase').value = c.base_url || PROVIDERS[key].base_url || '';
-    $('#cfgModel').value = c.model || PROVIDERS[key].default_model || '';
-  } else { applyProvider(key, true); }       // 全新 → 用预设填好
-  $('#cfgKey').value = '';
-  // Key 不回显明文（安全），用占位符明确"已存"状态
-  const needsKey = PROVIDERS[key].needs_key !== false;
-  $('#cfgKey').placeholder = !needsKey ? '本地无需 Key，可留空'
-    : (c.configured ? '已保存 ••••••••（留空=不修改，重填=更新）' : 'sk-...');
-  $('#cfgResult').hidden = true;
-  if (c.configured) showCfgResult('ok', `当前已连接：${PROVIDERS[c.provider]?.label || c.provider || ''} · ${c.model || ''}`);
+  syncCfgForProvider(key);                    // Key 不回显明文（安全），靠占位符表达「已存」状态
   $('#cfgModal').hidden = false;
 }
 function cfgPayload() {
@@ -573,6 +594,7 @@ async function saveCfg() {
   const payload = cfgPayload();
   await api('POST', '/api/config', payload);
   loadConfig();
+  try { _savedCfg = await api('GET', '/api/config'); } catch (e) {}  // 刷新各厂商已存状态，切换即时反映
   const localNoKey = PROVIDERS[payload.provider]?.needs_key === false;
   if (payload.api_key || localNoKey) {   // 填了 Key（或本地厂商）就顺手测一次连接
     showCfgResult('wait', '已保存，正在验证连接…');
@@ -737,6 +759,73 @@ function openChangelog() {
     ? renderChangelog(CHANGELOG_MD)
     : '<p style="color:var(--muted)">暂无更新日志。</p>';
   $('#logModal').hidden = false;
+}
+
+// ── 分镜章节（进度条章节点 + 点选限定编辑范围）──────────────
+function chapTotal() { return chapters.length ? chapters[chapters.length - 1].end : 0; }
+
+async function loadChapters(seq) {
+  clearChapters();
+  if (seq == null) return;
+  try {
+    const r = await api('GET', `/api/projects/${pid}/version/${seq}/chapters`);
+    chapters = (r && r.chapters) || [];
+  } catch (e) { chapters = []; }
+  renderChapters();
+}
+function clearChapters() {
+  chapters = []; selectedShot = null;
+  const t = $('#trackTicks'); if (t) t.innerHTML = '';
+  const s = $('#shotStrip'); if (s) { s.innerHTML = ''; s.hidden = true; }
+}
+function renderChapters() {
+  const total = chapTotal();
+  const ticks = $('#trackTicks');
+  if (ticks) {
+    ticks.innerHTML = '';
+    if (total) chapters.forEach((c) => {       // 每镜起点画一个刻度（首镜在 0 不画）
+      if (c.start <= 0.01) return;
+      const i = document.createElement('i'); i.style.left = (c.start / total * 100) + '%';
+      ticks.appendChild(i);
+    });
+  }
+  const strip = $('#shotStrip');
+  if (!strip) return;
+  strip.innerHTML = '';
+  if (!chapters.length || roMode) { strip.hidden = true; return; }
+  strip.hidden = false;
+  const lbl = el('span', 'lbl'); lbl.textContent = '改某一镜：'; strip.appendChild(lbl);
+  chapters.forEach((c) => {
+    const chip = el('div', 'shot-chip' + (selectedShot === c.idx ? ' sel' : ''));
+    chip.textContent = `第${c.idx}镜·${(c.label || '').slice(0, 10)}`;
+    chip.title = `第${c.idx}镜 ${fmt(c.start)}–${fmt(c.end)}：${c.label || ''}`;
+    chip.onclick = () => selectShot(c.idx === selectedShot ? null : c.idx);
+    strip.appendChild(chip);
+  });
+}
+function selectShot(idx) {
+  selectedShot = idx;
+  renderChapters();
+  $('#input').placeholder = idx
+    ? `只改第${idx}镜：${(chapters.find((c) => c.idx === idx) || {}).label || ''}（说要怎么改）`
+    : '描述你想要的动画，或继续修改…（例：做一个勾股定理动画）';
+  if (idx && curVideo && curVideo.duration) {     // 选中即跳到那一镜起点，便于先看清再改
+    const c = chapters.find((x) => x.idx === idx);
+    if (c) { curVideo.currentTime = c.start + 0.05; }
+  }
+}
+// 进度条悬停显示当前所在分镜（章节提示）
+function chapterHover(clientX) {
+  const tip = $('#chTip'), track = $('#track'); if (!tip || !track) return;
+  const total = chapTotal();
+  if (!total || !chapters.length) { tip.hidden = true; return; }
+  const r = track.getBoundingClientRect();
+  const p = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  const t = p * total;
+  const c = chapters.find((x) => t >= x.start && t < x.end) || chapters[chapters.length - 1];
+  tip.textContent = `第${c.idx}镜 · ${c.label || ''}`;
+  tip.style.left = (p * 100) + '%';
+  tip.hidden = false;
 }
 
 // 进度条视觉位置（0..1）：同步填充宽度与 thumb 位置

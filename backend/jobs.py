@@ -72,17 +72,11 @@ def _prepare_assets(pid: str) -> list[str]:
 
 
 def _load_llm() -> BaseLLM:
-    cfg = None
-    if config.CONFIG_PATH.exists():
-        try:
-            cfg = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            cfg = None
-    return from_config(cfg)
+    return from_config(config.active_flat())   # 当前激活厂商（按厂商分别保存）
 
 
 # ── 生成管线 ────────────────────────────────────────────────
-async def _run_generation(pid: str, prompt: str) -> None:
+async def _run_generation(pid: str, prompt: str, shot_index: Optional[int] = None) -> None:
     llm = _load_llm()
     seq = store.next_seq(pid)
     store.create_version(pid, seq, prompt)
@@ -92,23 +86,39 @@ async def _run_generation(pid: str, prompt: str) -> None:
 
     await emit("version_start", demo=llm.demo)
     prior = store.latest_code(pid)   # 含失败版：失败后老师可在这次尝试基础上继续改
+    base = store.first_user_prompt(pid)   # 原始教学主题：定向编辑失败需整段重生成时据此保持不跑题
     asset_names = _prepare_assets(pid)
 
     result = await engine.respond(prompt, llm, emit, prior_code=prior,
+                                  base_prompt=base, shot_index=shot_index,
                                   asset_names=asset_names)
 
     if getattr(result, "warnings", None):
         print("[教学检查] " + " | ".join(result.warnings), file=sys.stderr, flush=True)
 
+    fallback = False
     if not result.ok:
-        store.finish_version(pid, seq, status="failed", code=result.code or "",
-                             storyboard=result.storyboard,
-                             heal_attempts=result.attempts, error=result.error)
-        msg = result.error or "生成失败"
-        store.add_message(pid, "ai", msg, version_seq=seq)
-        await emit("failed", error=msg, env_missing=result.env_missing,
-                   code=result.code or "")
-        return
+        # 定向编辑没定位到改处：保住旧版、删掉本轮空 pending 版、提示换说法（绝不重做整片）
+        if getattr(result, "no_change", False):
+            store.delete_version(pid, seq)
+            store.add_message(pid, "ai", result.error, version_seq=None)
+            await emit("no_change", error=result.error)
+            return
+        # 没救的情形：环境缺依赖 / 完全没产出代码 → 直接失败（代码仍保留可继续改）
+        if result.env_missing or not result.code:
+            store.finish_version(pid, seq, status="failed", code=result.code or "",
+                                 storyboard=result.storyboard,
+                                 heal_attempts=result.attempts, error=result.error)
+            msg = result.error or "生成失败"
+            store.add_message(pid, "ai", msg, version_seq=seq)
+            await emit("failed", error=msg, env_missing=result.env_missing,
+                       code=result.code or "")
+            return
+        # 否则自愈虽没完全通过，仍拿最后一版代码【真渲一次】兜底：
+        # dry_run 超时(45s)的重场景，真渲(120s 预算)常能跑完；纯代码错会秒级失败、几乎不增延迟。
+        # 让「调了模型至少拿到一版能看的片」，而不是白等一场空。
+        fallback = True
+        await emit("fallback_render")
 
     pdir = config.project_dir(pid)
     # 缩略图：秒出首帧给即时反馈
@@ -124,13 +134,16 @@ async def _run_generation(pid: str, prompt: str) -> None:
     pr = await render.preview(result.code, prev)
 
     if not pr.ok:
+        # 兜底也没渲出来 → 回到「失败但保留代码」；正常路径预览失败也走这里
+        err = result.error if fallback else ("预览渲染失败：" + (pr.traceback[:120] or "未知"))
         store.finish_version(pid, seq, status="failed", code=result.code,
                              storyboard=result.storyboard,
                              thumb=thumb if tr.ok else None,
-                             heal_attempts=result.attempts,
-                             error="预览渲染失败：" + (pr.traceback[:120] or "未知"))
-        store.add_message(pid, "ai", "预览渲染失败，可换个说法重试。", version_seq=seq)
-        await emit("failed", error="预览渲染失败", code=result.code or "")
+                             heal_attempts=result.attempts, error=err)
+        chat = result.error if fallback else "预览渲染失败，可换个说法重试。"
+        store.add_message(pid, "ai", chat, version_seq=seq)
+        await emit("failed", error=("多次尝试仍未渲染成功" if fallback else "预览渲染失败"),
+                   code=result.code or "")
         return
 
     store.finish_version(pid, seq, status="ok", code=result.code,
@@ -139,12 +152,16 @@ async def _run_generation(pid: str, prompt: str) -> None:
                          heal_attempts=result.attempts)
     store.touch_project(pid, current_version=seq)
 
-    note = "已生成动画并渲染出预览。" if result.attempts == 0 else \
-           f"已生成动画（自动修正 {result.attempts} 次后渲染成功）。"
+    if fallback:
+        note = "自动校验没完全通过，但已尽力渲染出这一版（画面可能有小瑕疵）。不满意可直接说怎么改，会在这版基础上继续调。"
+    elif result.attempts == 0:
+        note = "已生成动画并渲染出预览。"
+    else:
+        note = f"已生成动画（自动修正 {result.attempts} 次后渲染成功）。"
     store.add_message(pid, "ai", note, version_seq=seq)
     await emit("preview_ready", thumb_url=_media_url(thumb) if tr.ok else None,
                preview_url=_media_url(prev), attempts=result.attempts,
-               demo=llm.demo)
+               demo=llm.demo, best_effort=fallback)
 
 
 _QLABEL = {"l": "480p", "m": "720p", "h": "1080p", "k": "4K"}
@@ -287,9 +304,10 @@ class JobQueue:
             finally:
                 self.q.task_done()
 
-    async def submit_generation(self, pid: str, prompt: str) -> int:
+    async def submit_generation(self, pid: str, prompt: str,
+                                shot_index: Optional[int] = None) -> int:
         pos = self.q.qsize()
-        await self.q.put((pid, _run_generation(pid, prompt)))
+        await self.q.put((pid, _run_generation(pid, prompt, shot_index)))
         return pos
 
     async def submit_export(self, pid: str, seq: int, formats: list[str],

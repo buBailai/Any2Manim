@@ -1,6 +1,7 @@
 """全局配置与路径约定（仿 OpenMentor：SQLite + 文件落盘、数据自主）。"""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -83,7 +84,7 @@ def ffmpeg_bins() -> "tuple[str, str]":
 
 # ── 渲染护栏（防复杂场景/滥用拖垮机器）─────────────────────────
 SCENE_CLASS_NAME = "GeneratedScene"        # 钉死类名，便于强约束输出 + 渲染定位
-DRYRUN_TIMEOUT = 45                         # 验证渲染超时(s)
+DRYRUN_TIMEOUT = 60                         # 验证渲染超时(s)
 PREVIEW_TIMEOUT = 120                       # 低清预览超时(s)
 EXPORT_TIMEOUT = 600                        # 高清导出超时(s)
 MAX_PREVIEW_SECONDS = 60                    # 单个场景时长上限（防超长）
@@ -104,3 +105,52 @@ def ensure_dirs() -> None:
 
 def project_dir(pid: str) -> Path:
     return PROJECTS_DIR / pid
+
+
+# ── API 配置：按厂商分别长期保存（每个厂商各记各的 Key/地址/模型）──────────
+# 磁盘格式：{"active": "<厂商key>", "providers": {"deepseek": {base_url,api_key,model}, ...}}
+# 兼容旧的扁平格式 {provider,base_url,api_key,model}：读时自动并入新结构，下次保存即固化。
+def read_config() -> dict:
+    """读 config.json，统一成 {active, providers:{p:{base_url,api_key,model}}}。"""
+    if not CONFIG_PATH.exists():
+        return {"active": "", "providers": {}}
+    try:
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"active": "", "providers": {}}
+    if isinstance(raw.get("providers"), dict):
+        raw.setdefault("active", "")
+        return raw
+    # 旧扁平格式 → 迁移
+    prov = raw.get("provider", "")
+    out: dict = {"active": prov, "providers": {}}
+    if prov:
+        out["providers"][prov] = {"base_url": raw.get("base_url", ""),
+                                  "api_key": raw.get("api_key", ""),
+                                  "model": raw.get("model", "")}
+    return out
+
+
+def provider_flat(p: str) -> dict:
+    """某厂商的扁平配置（喂给 llm.from_config）。"""
+    d = read_config().get("providers", {}).get(p, {})
+    return {"provider": p, "base_url": d.get("base_url", ""),
+            "api_key": d.get("api_key", ""), "model": d.get("model", "")}
+
+
+def active_flat() -> dict:
+    """当前激活厂商的扁平配置（喂给 llm.from_config）。"""
+    return provider_flat(read_config().get("active", ""))
+
+
+def save_provider(provider: str, base_url: str, api_key: str, model: str) -> None:
+    """保存某厂商配置并设为激活。api_key 留空时保留该厂商原 Key（改模型/地址不必重填）。"""
+    c = read_config()
+    provs = c.setdefault("providers", {})
+    cur = provs.get(provider, {})
+    if not api_key and cur.get("api_key"):
+        api_key = cur["api_key"]
+    provs[provider] = {"base_url": base_url, "api_key": api_key, "model": model}
+    c["active"] = provider
+    ensure_dirs()
+    CONFIG_PATH.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -168,6 +168,17 @@ svg.ico{stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stro
 .track:hover .thumb,.track.dragging .thumb{transform:translate(-50%,-50%) scale(1)}
 .track.dragging .thumb{box-shadow:0 0 0 5px rgba(123,123,230,.28),0 1px 4px rgba(0,0,0,.5)}
 .ctrl .t{font-size:11.5px;font-family:var(--mono)}
+/* 进度条分镜章节点 */
+.track .ticks{position:absolute;left:0;right:0;top:50%;height:11px;transform:translateY(-50%);pointer-events:none}
+.track .ticks i{position:absolute;top:0;width:2px;height:11px;margin-left:-1px;border-radius:1px;background:rgba(255,255,255,.72);box-shadow:0 0 2px rgba(0,0,0,.5)}
+.track .ch-tip{position:absolute;bottom:20px;transform:translateX(-50%);background:rgba(20,22,30,.96);color:#fff;font-size:11px;padding:4px 9px;border-radius:7px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4);max-width:240px;overflow:hidden;text-overflow:ellipsis}
+/* 分镜选择条（限定编辑范围） */
+.shot-strip{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px;align-items:center}
+.shot-strip:empty,.shot-strip[hidden]{display:none}
+.shot-strip .lbl{font-size:11.5px;color:var(--muted);margin-right:2px}
+.shot-chip{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer;background:var(--panel-2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:color .12s,border-color .12s}
+.shot-chip:hover{border-color:var(--accent);color:var(--accent)}
+.shot-chip.sel{background:var(--accent-soft);color:var(--accent-deep);border-color:transparent;font-weight:600}
 .ctrl .q{font-size:11px;color:#D6D9E2;background:rgba(255,255,255,.075);border-radius:8px;padding:5px 10px}
 .narr-toggle{font-size:11px;color:#D6D9E2;background:rgba(255,255,255,.075);border-radius:8px;padding:5px 10px;cursor:pointer;user-select:none;white-space:nowrap}
 .narr-toggle.on{background:var(--accent);color:#fff}
