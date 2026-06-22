@@ -47,76 +47,24 @@ class OpenAILLM(BaseLLM):
             return b
         return f"{b}/chat/completions"
 
-    def _messages(self, system: str, user: str) -> list:
-        return [{"role": "system", "content": system},
-                {"role": "user", "content": user}]
-
     def complete(self, system: str, user: str, *, task: str = "codegen",
                  temperature: float = 0.2) -> str:
-        """流式调用：按 token 增量读取。
-
-        关键：流式下 read 超时是【两次数据块之间】的间隔，而不是整段生成的总时长——
-        慢模型 / 慢网络（如 Windows 机器到企业网关）下，只要 token 在持续吐出就不会
-        「read operation timed out」。生成长代码（codegen）尤其受益。
-        个别网关不支持 SSE → 回退非流式（长 read 超时）。
-        """
         url = self._endpoint()
         payload = {
             "model": self.model,
-            "messages": self._messages(system, user),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
             "temperature": temperature,
-            "stream": True,
         }
-        headers = {"Authorization": f"Bearer {self.api_key}",
-                   "Accept": "text/event-stream"}
-        # connect 短、read（块间间隔）给足，慢网关也不至于在长生成里被切断
-        timeout = httpx.Timeout(connect=30.0, read=config.LLM_READ_TIMEOUT,
-                                write=30.0, pool=30.0)
+        headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
-            parts: list[str] = []
-            with httpx.Client(timeout=timeout) as cli:
-                with cli.stream("POST", url, json=payload, headers=headers) as r:
-                    if r.status_code >= 400:
-                        body = r.read().decode("utf-8", "replace")
-                        raise LLMError(f"LLM 接口返回 {r.status_code}: {body[:200]}")
-                    for line in r.iter_lines():
-                        if not line:
-                            continue
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                        if line == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(line)
-                        except ValueError:
-                            continue          # 非 JSON 行（注释/心跳）跳过
-                        try:
-                            piece = obj["choices"][0]["delta"].get("content") or ""
-                        except (KeyError, IndexError, TypeError):
-                            piece = ""
-                        if piece:
-                            parts.append(piece)
-            text = "".join(parts)
-            if text.strip():
-                return text
-            # 流式没拿到内容（网关不支持流式等）→ 非流式兜底
-            return self._complete_blocking(url, payload, headers)
-        except LLMError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise LLMError(f"LLM 调用失败：{e}")
-
-    def _complete_blocking(self, url: str, payload: dict, headers: dict) -> str:
-        """非流式兜底（不支持 SSE 的网关）：用很长的 read 超时一次性等整段响应。"""
-        p = dict(payload); p.pop("stream", None)
-        h = {k: v for k, v in headers.items() if k.lower() != "accept"}
-        timeout = httpx.Timeout(connect=30.0, read=config.LLM_READ_TIMEOUT,
-                                write=30.0, pool=30.0)
-        try:
-            with httpx.Client(timeout=timeout) as cli:
-                r = cli.post(url, json=p, headers=h)
+            with httpx.Client(timeout=120) as cli:
+                r = cli.post(url, json=payload, headers=headers)
                 r.raise_for_status()
-                return r.json()["choices"][0]["message"]["content"]
+                data = r.json()
+            return data["choices"][0]["message"]["content"]
         except httpx.HTTPStatusError as e:
             raise LLMError(f"LLM 接口返回 {e.response.status_code}: {e.response.text[:200]}")
         except Exception as e:  # noqa: BLE001

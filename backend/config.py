@@ -39,11 +39,42 @@ def _inject_bundled_latex() -> None:
 _inject_bundled_latex()
 
 
+def _latex_works() -> bool:
+    """真编译一个最小公式，确认 latex+dvisvgm 能跑通——不只是 exe 在不在。
+
+    内置 LaTeX 在某些机器/路径上「存在却编译失败」（典型：安装路径含中文/CJK 或空格，
+    TeX 的 kpathsea 因此找不到 texmf/字体而挂）。只查 exe 存在会误判成「有 LaTeX」→
+    让 AI 生成 MathTex → 真渲染时全失败。这里实编译一次探出真实可用性，失败就当没 LaTeX，
+    上层自动降级用 Text 写公式（数理题至少能出片）。
+    """
+    if not (shutil.which("latex") and shutil.which("dvisvgm")):
+        return False
+    import subprocess
+    import tempfile
+    tex = ("\\documentclass[preview]{standalone}\n"
+           "\\usepackage{amsmath}\\usepackage{amssymb}\n"
+           "\\begin{document}$x^{2}+\\frac{1}{2}$\\end{document}\n")
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "probe.tex").write_text(tex, encoding="utf-8")
+            r1 = subprocess.run(
+                ["latex", "-interaction=nonstopmode", "-halt-on-error", "probe.tex"],
+                cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+            if r1.returncode != 0 or not (Path(td) / "probe.dvi").exists():
+                return False
+            r2 = subprocess.run(
+                ["dvisvgm", "--no-fonts", "-o", "probe.svg", "probe.dvi"],
+                cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+            return r2.returncode == 0 and (Path(td) / "probe.svg").exists()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def has_latex() -> bool:
-    """本机能否渲染 MathTex 公式（需 latex + dvisvgm）。结果缓存，避免反复探测。"""
+    """本机能否【真正渲染】MathTex 公式（实编译一个小公式验证，不只查 exe 存在）。缓存。"""
     global _latex_cache
     if _latex_cache is None:
-        _latex_cache = bool(shutil.which("latex") and shutil.which("dvisvgm"))
+        _latex_cache = _latex_works()
     return _latex_cache
 
 # ── 目录约定 ──────────────────────────────────────────────
@@ -93,11 +124,6 @@ MAX_PREVIEW_SECONDS = 60                    # 单个场景时长上限（防超�
 HEAL_MAX_ATTEMPTS = 4                       # 硬预算：最多尝试次数（主约束）
 HEAL_MAX_SECONDS = 180                      # 硬预算：heal 循环累计时间上限（含真实模型修复调用）
 HEAL_SAME_ERROR_STOP = 2                    # 同错连续 N 次即停
-
-# ── LLM 调用超时（流式：块间间隔/首字等待；兜底非流式：整段响应）──────────────
-# 给足，让慢模型 / 慢网络（如 Windows 机器到企业网关）生成长代码也不被 read timeout 切断。
-# 可用环境变量 A2M_LLM_TIMEOUT 覆盖。
-LLM_READ_TIMEOUT = float(os.environ.get("A2M_LLM_TIMEOUT", "240"))
 
 # ── worker 数（个人版=1 串行；校园版按核数）──────────────────
 RENDER_WORKERS = int(os.environ.get("A2M_WORKERS", "1"))
