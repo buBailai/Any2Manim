@@ -94,6 +94,11 @@ HEAL_MAX_ATTEMPTS = 4                       # 硬预算：最多尝试次数（�
 HEAL_MAX_SECONDS = 180                      # 硬预算：heal 循环累计时间上限（含真实模型修复调用）
 HEAL_SAME_ERROR_STOP = 2                    # 同错连续 N 次即停
 
+# ── LLM 调用超时（流式：块间间隔/首字等待；兜底非流式：整段响应）──────────────
+# 给足，让慢模型 / 慢网络（如 Windows 机器到企业网关）生成长代码也不被 read timeout 切断。
+# 可用环境变量 A2M_LLM_TIMEOUT 覆盖。
+LLM_READ_TIMEOUT = float(os.environ.get("A2M_LLM_TIMEOUT", "240"))
+
 # ── worker 数（个人版=1 串行；校园版按核数）──────────────────
 RENDER_WORKERS = int(os.environ.get("A2M_WORKERS", "1"))
 
