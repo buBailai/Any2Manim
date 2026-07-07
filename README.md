@@ -13,7 +13,7 @@
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/version-v1.0.6-5B5BD6" alt="v1.0.6">
+  <img src="https://img.shields.io/badge/version-v1.1.0-5B5BD6" alt="v1.1.0">
   <img src="https://img.shields.io/badge/manim-CE%200.20-orange" alt="ManimCE 0.20">
 </p>
 
@@ -40,6 +40,7 @@ Any2Manim 让**不会写代码的老师**也能做出专业的教学动画：你
 - **多格式导出** —— MP4（720p/1080p/4K）、GIF、封面图（可拖进度条任意选帧）。
 - **AI 配音 + 字幕** —— edge-tts 多音色、可调语速，AI 按分镜时长自动写旁白，字幕可烧录或外挂。
 - **素材上传 / 分学科示例库 / 项目归档 / 版本回溯**。
+- **后台一键在线升级**（免安装包）—— 点一下检查更新、下载校验、重启换新，项目 / 视频 / 配置分毫不动。
 - **深色模式 · 简繁切换 · 局域网访问**。
 - **演示模式** —— 不填 Key 也能用内置范例离线出片，先看效果。
 
