@@ -204,6 +204,22 @@ svg.ico{stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stro
 .log-head h3{margin-bottom:0}
 .log-close{font-size:24px;line-height:1;color:var(--subtle);cursor:pointer;padding:0 4px;border-radius:8px}
 .log-close:hover{color:var(--ink)}
+/* 在线更新面板（更新日志浮窗顶部）*/
+.update-panel{border:1px solid var(--line);border-radius:13px;background:var(--panel-2);padding:13px 15px;margin-bottom:16px}
+.up-row{display:flex;gap:8px;align-items:center}
+.up-row input{flex:1;min-width:0;width:auto;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12.5px;font-family:var(--sans);outline:none;background:var(--panel);color:var(--ink)}
+.up-row input:focus{border-color:var(--accent)}
+.up-row .btn-ghost,.up-row .btn-primary{padding:9px 15px;font-size:12.5px;white-space:nowrap;flex-shrink:0}
+.up-msg{font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:10px}
+.up-msg:empty{display:none}
+.up-msg.ok{color:var(--ok)}
+.up-msg.warn{color:var(--err)}
+.up-progress{height:7px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:10px}
+.up-bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent-vio));border-radius:99px;transition:width .3s}
+.up-actions{display:flex;gap:8px;margin-top:11px}
+.up-actions:empty{display:none}
+.up-actions button{padding:9px 17px;font-size:12.5px}
+
 .changelog{font-size:13.5px;line-height:1.7;color:var(--ink-soft)}
 .changelog h2{font-family:var(--serif);font-size:16px;color:var(--ink);margin:20px 0 4px;display:flex;align-items:baseline;gap:10px}
 .changelog h2:first-child{margin-top:0}

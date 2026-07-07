@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -89,6 +90,53 @@ PROJECTS_DIR = DATA_DIR / "projects"
 ASSETS_DIR = DATA_DIR / "assets"
 DB_PATH = DATA_DIR / "any2manim.db"
 CONFIG_PATH = DATA_DIR / "config.json"     # API 厂商/Key/模型（BYO-Key，本地存）
+
+# ── 在线更新：免安装包探测 / 版本真值 / 更新源 ─────────────────
+# 免安装包布局（PACKAGE_ROOT = APP_DIR 的上一级）：
+#   Any2Manim-Win/                 ← PACKAGE_ROOT（updater 脚本在此运行）
+#     启动 Any2Manim.bat           ← 启动器，永不更新
+#     python/  tinytex/  ffmpeg    ← 内置运行时，仅大版本换整包，不在线更新
+#     app/                         ← APP_DIR：backend/frontend/CHANGELOG… 代码在此
+#       data/ data.nosync/ media/  ← 用户数据，升级绝不触碰
+# 在线更新只按白名单换 app/ 下的**代码子项**，data/media 与 app 平级但不在白名单，天然不动。
+def _detect_root() -> "Path | None":
+    """判定当前是不是免安装包运行；是则返回包根，否则 None（dev/pip 安装）。
+
+    优先认启动器注入的 A2M_ROOT；否则探包根有没有内置 python/ 与 tinytex/。
+    """
+    env = os.environ.get("A2M_ROOT", "").strip()
+    if env:
+        p = Path(env)
+        return p if p.is_dir() else None
+    root = APP_DIR.parent
+    if (root / "python").is_dir() and (root / "tinytex").is_dir():
+        return root
+    return None
+
+
+PACKAGE_ROOT = _detect_root()
+PORTABLE = PACKAGE_ROOT is not None
+
+# 更新源：开源脱敏——源码默认留空，官方免安装包靠启动器注入 A2M_UPDATE_URL 拿到，
+# 用户也可在页面「检查更新」里手填（存 settings 表，随 data 保留、升级不丢）。
+DEFAULT_UPDATE_URL = os.environ.get("A2M_UPDATE_URL", "").strip().rstrip("/")
+
+_VER_RE = re.compile(r"^##\s*\[(\d+\.\d+\.\d+)\]")
+
+
+def app_version() -> str:
+    """当前版本真值 = CHANGELOG.md 顶部首个 `## [X.Y.Z]`（发版只改文档）。"""
+    try:
+        for ln in (APP_DIR / "CHANGELOG.md").read_text(encoding="utf-8").splitlines():
+            m = _VER_RE.match(ln.strip())
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    return "0.0.0"
+
+
+APP_VERSION = app_version()
 
 # ── 渲染调用：用 `python -m manim` 而非 console script ──────────
 # 跨平台稳：Windows 内嵌 Python 没有 bin/manim（console script 是 Scripts\manim.exe），

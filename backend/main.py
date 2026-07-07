@@ -26,6 +26,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Any2Manim", lifespan=lifespan)
 
+# 在线更新路由（须在文件末尾的 catch-all 静态 mount 之前注册）
+from . import update  # noqa: E402
+app.include_router(update.router)
+
 
 # ── 请求体 ──────────────────────────────────────────────────
 class ConfigIn(BaseModel):

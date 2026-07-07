@@ -538,6 +538,11 @@ function bindUI() {
   $('#logBtn').onclick = openChangelog;
   $('#logClose').onclick = () => $('#logModal').hidden = true;
   $('#logModal').onclick = (e) => { if (e.target.id === 'logModal') $('#logModal').hidden = true; };
+  // 在线更新
+  $('#upSave').onclick = upSaveSource;
+  $('#upCheck').onclick = upCheck;
+  $('#upDownload').onclick = upDownload;
+  $('#upApply').onclick = upApply;
   $('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme !== 'dark');
   $('#langBtn').onclick = () => setLang(!i18nHant);
   // 配置弹窗
@@ -759,6 +764,87 @@ function openChangelog() {
     ? renderChangelog(CHANGELOG_MD)
     : '<p style="color:var(--muted)">暂无更新日志。</p>';
   $('#logModal').hidden = false;
+  refreshUpdate();
+}
+
+// ── 在线更新（检查 → 下载 → 重启升级）────────────────────────
+let _upPoll = null;
+function upMsg(text, kind) {
+  const m = $('#upMsg'); m.textContent = text || '';
+  m.className = 'up-msg' + (kind ? ' ' + kind : '');
+}
+function upBar(pct) {
+  const wrap = $('#upProgress'), bar = $('#upBar');
+  if (pct == null) { wrap.hidden = true; return; }
+  wrap.hidden = false; bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+}
+async function refreshUpdate() {
+  $('#upDownload').hidden = true; $('#upApply').hidden = true; upBar(null);
+  try {
+    const s = await api('GET', '/api/update/status');
+    $('#upUrl').value = s.update_url || '';
+    if (s.pending) {              // 已有下载好待应用的新版
+      upMsg('新版已就绪，点「重启完成升级」应用。', 'ok');
+      $('#upApply').hidden = !s.portable;
+      if (!s.portable) upMsg('新版已下载，但当前为开发/源码模式，不支持一键重启升级。', 'warn');
+    } else {
+      upMsg('当前版本 v' + s.version + (s.portable ? '' : '（开发模式，仅免安装包支持一键升级）'), '');
+    }
+  } catch (e) { upMsg('', ''); }
+}
+async function upCheck() {
+  upMsg('正在检查…', ''); $('#upDownload').hidden = true; $('#upApply').hidden = true;
+  try {
+    const r = await api('POST', '/api/update/check');
+    if (!r.ok) { upMsg(r.msg || '检查失败', 'warn'); return; }
+    if (!r.newer) { upMsg('已是最新版本 v' + r.current + ' ✓', 'ok'); return; }
+    const size = r.size ? `（约 ${(r.size / 1048576).toFixed(1)} MB）` : '';
+    upMsg(`发现新版 v${r.latest}${size}${r.notes ? '：' + r.notes : ''}`, 'ok');
+    $('#upDownload').hidden = false;
+  } catch (e) { upMsg('检查失败：' + e.message, 'warn'); }
+}
+async function upDownload() {
+  $('#upDownload').hidden = true; upMsg('开始下载…', ''); upBar(0);
+  try {
+    const r = await api('POST', '/api/update/download');
+    if (!r.ok) { upMsg(r.msg || '下载失败', 'warn'); upBar(null); return; }
+  } catch (e) { upMsg('下载失败：' + e.message, 'warn'); upBar(null); return; }
+  if (_upPoll) clearInterval(_upPoll);
+  _upPoll = setInterval(async () => {
+    try {
+      const p = await api('GET', '/api/update/progress');
+      upBar(p.pct);
+      if (p.msg) upMsg(p.msg, p.state === 'error' ? 'warn' : '');
+      if (p.state === 'ready') {
+        clearInterval(_upPoll); _upPoll = null; upBar(100);
+        const s = await api('GET', '/api/update/status');
+        $('#upApply').hidden = !s.portable;
+        if (!s.portable) upMsg('新版已下载，但开发/源码模式不支持一键重启升级。', 'warn');
+      } else if (p.state === 'error') {
+        clearInterval(_upPoll); _upPoll = null; upBar(null);
+        $('#upDownload').hidden = false;
+      }
+    } catch (e) { /* 轮询偶发失败忽略，下一拍再来 */ }
+  }, 1000);
+}
+async function upApply() {
+  if (!confirm('将重启程序完成升级，约 10 秒。期间页面会短暂无法访问，升级后自动刷新。继续？')) return;
+  $('#upApply').hidden = true; upMsg('正在重启升级…请稍候，勿关闭启动窗口。', '');
+  try { await api('POST', '/api/update/apply'); } catch (e) { /* 进程会退出，请求可能中断，正常 */ }
+  let tries = 0;
+  const wait = setInterval(async () => {
+    tries++;
+    try {
+      const s = await api('GET', '/api/update/status');
+      if (s && !s.pending) { clearInterval(wait); upMsg('升级完成，正在刷新…', 'ok'); setTimeout(() => location.reload(), 800); }
+    } catch (e) { if (tries > 40) { clearInterval(wait); upMsg('等待重启超时，请手动刷新页面。', 'warn'); } }
+  }, 1500);
+}
+async function upSaveSource() {
+  try {
+    const r = await api('POST', '/api/update/source', { update_url: $('#upUrl').value.trim() });
+    upMsg('更新源已保存' + (r.update_url ? '' : '（留空，将用内置官方源）'), 'ok');
+  } catch (e) { upMsg('保存失败：' + e.message, 'warn'); }
 }
 
 // ── 分镜章节（进度条章节点 + 点选限定编辑范围）──────────────

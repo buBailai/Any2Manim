@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS assets (
     orig_name   TEXT,                      -- 老师引用素材用的名字
     created_at  REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings (      -- KV 杂项设置（如在线更新源 update_url）
+    key         TEXT PRIMARY KEY,
+    value       TEXT DEFAULT ''
+);
 """
 
 
