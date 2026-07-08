@@ -13,7 +13,7 @@
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/version-v1.1.0-5B5BD6" alt="v1.1.0">
+  <img src="https://img.shields.io/badge/version-v1.1.1-5B5BD6" alt="v1.1.1">
   <img src="https://img.shields.io/badge/manim-CE%200.20-orange" alt="ManimCE 0.20">
 </p>
 

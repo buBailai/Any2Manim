@@ -52,8 +52,19 @@ class SourceIn(BaseModel):
     update_url: str = ""
 
 
+def _stored_update_url() -> str:
+    return (store.get_setting("update_url") or "").strip().rstrip("/")
+
+
+def _visible_update_url() -> str:
+    """只把用户自填源回给前端；启动器注入的官方默认源不在页面暴露。"""
+    saved = _stored_update_url()
+    default = (config.DEFAULT_UPDATE_URL or "").rstrip("/")
+    return "" if default and saved == default else saved
+
+
 def _update_url() -> str:
-    return (store.get_setting("update_url") or config.DEFAULT_UPDATE_URL or "").rstrip("/")
+    return (_stored_update_url() or config.DEFAULT_UPDATE_URL or "").rstrip("/")
 
 
 def _ver_tuple(v: str):
@@ -103,16 +114,24 @@ def _fetch_json(url: str) -> dict:
 
 @router.get("/status")
 def status():
+    visible_url = _visible_update_url()
+    active_url = _update_url()
     return {"version": config.app_version(), "portable": config.PORTABLE,
-            "update_url": _update_url(),
+            "update_url": visible_url,
+            "source_configured": bool(active_url),
+            "using_default_update_url": bool(config.DEFAULT_UPDATE_URL and not visible_url),
             "pending": (_new_dir() / "backend" / "main.py").exists(),
             **{k: STATE[k] for k in ("state", "pct", "msg")}}
 
 
 @router.post("/source")
 def save_source(body: SourceIn):
-    store.set_setting("update_url", body.update_url.strip().rstrip("/"))
-    return {"ok": True, "update_url": _update_url()}
+    url = body.update_url.strip().rstrip("/")
+    if config.DEFAULT_UPDATE_URL and url == config.DEFAULT_UPDATE_URL.rstrip("/"):
+        url = ""
+    store.set_setting("update_url", url)
+    return {"ok": True, "update_url": _visible_update_url(),
+            "using_default_update_url": bool(config.DEFAULT_UPDATE_URL and not _visible_update_url())}
 
 
 @router.post("/check")

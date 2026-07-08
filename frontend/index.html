@@ -8,7 +8,7 @@
 <script>/* 主题在首屏前生效，避免深色闪烁 */try{var t=localStorage.getItem('a2m_theme');if(t==='dark')document.documentElement.dataset.theme='dark';}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Serif+SC:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/styles.css?v=108">
+<link rel="stylesheet" href="/styles.css?v=109">
 </head>
 <body>
 <div class="app">
@@ -166,10 +166,11 @@
     <div class="log-head"><h3>更新日志</h3><span class="log-close" id="logClose">×</span></div>
     <div class="update-panel" id="updatePanel">
       <div class="up-row">
-        <input id="upUrl" placeholder="更新源地址（免安装包已内置，留空即用官方源）">
+        <input id="upUrl" placeholder="官方更新源已内置并隐藏；自部署可填自己的源">
         <button class="btn-ghost" id="upSave" title="保存更新源地址">保存源</button>
         <button class="btn-primary" id="upCheck">检查更新</button>
       </div>
+      <div class="up-source-hint" id="upSourceHint"></div>
       <div class="up-msg" id="upMsg"></div>
       <div class="up-progress" id="upProgress" hidden><div class="up-bar" id="upBar"></div></div>
       <div class="up-actions" id="upActions">
@@ -182,6 +183,6 @@
 </div>
 
 <script src="/s2t.js"></script>
-<script src="/app.js?v=108"></script>
+<script src="/app.js?v=109"></script>
 </body>
 </html>

@@ -778,11 +778,19 @@ function upBar(pct) {
   if (pct == null) { wrap.hidden = true; return; }
   wrap.hidden = false; bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
 }
+function upSourceHint(s) {
+  const h = $('#upSourceHint');
+  if (!h) return;
+  if (s && s.update_url) h.textContent = '当前使用自定义更新源。';
+  else if (s && s.using_default_update_url) h.textContent = '当前使用内置官方更新源（地址已隐藏）。';
+  else h.textContent = '当前未配置更新源。';
+}
 async function refreshUpdate() {
   $('#upDownload').hidden = true; $('#upApply').hidden = true; upBar(null);
   try {
     const s = await api('GET', '/api/update/status');
     $('#upUrl').value = s.update_url || '';
+    upSourceHint(s);
     if (s.pending) {              // 已有下载好待应用的新版
       upMsg('新版已就绪，点「重启完成升级」应用。', 'ok');
       $('#upApply').hidden = !s.portable;
@@ -843,7 +851,11 @@ async function upApply() {
 async function upSaveSource() {
   try {
     const r = await api('POST', '/api/update/source', { update_url: $('#upUrl').value.trim() });
-    upMsg('更新源已保存' + (r.update_url ? '' : '（留空，将用内置官方源）'), 'ok');
+    $('#upUrl').value = r.update_url || '';
+    upSourceHint(r);
+    if (r.update_url) upMsg('自定义更新源已保存。', 'ok');
+    else if (r.using_default_update_url) upMsg('已恢复内置官方源（地址已隐藏）。', 'ok');
+    else upMsg('更新源已清空。', 'ok');
   } catch (e) { upMsg('保存失败：' + e.message, 'warn'); }
 }
 
