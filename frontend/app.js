@@ -180,6 +180,8 @@ function handleEvent(ev) {
       setStatus('spin', ev.stage === 'thumb' ? '正在渲染首帧…' : '正在渲染预览…');
       setBadge(ev.stage === 'thumb' ? '渲染首帧' : '渲染预览 · 480p');
       logLine('info', `▸ 渲染${ev.stage === 'thumb' ? '首帧' : '低清预览'}`); break;
+    case 'safe_retry': setStatus('spin', '多次修复未通过，改用最稳写法重写一版…');
+      logLine('warn', '↻ 安全模式：用最保守写法整片重写再验证'); break;
     case 'fallback_render': setStatus('spin', '自愈未完全通过，正在尽力渲染最后一版…');
       logLine('warn', '↻ 自愈未完全通过 → 尽力渲染兜底（重场景给足时间，纯代码错会很快失败）'); break;
     case 'thumb_ready': if (ev.thumb_url) showThumb(ev.thumb_url); break;
@@ -188,6 +190,7 @@ function handleEvent(ev) {
     case 'no_change': onNoChange(ev); break;
     case 'exporting': setBadge('导出高清中…'); logLine('info', '▸ 导出高清'); $('#exportBtn').disabled = true; break;
     case 'teach_repair': logLine('info', '▸ 画面偏简单，正在补充教学内容…'); break;
+    case 'layout_repair': setStatus('spin', '正在优化画面布局…'); logLine('info', `▸ 发现 ${ev.count||''} 处布局问题（重叠/越界/未清场），正在调整…`); break;
     case 'voicing': setBadge('合成配音中…'); logLine('info', '▸ 生成旁白 + edge-tts 配音'); break;
     case 'voice_warn': logLine('err', '⚠ 配音/字幕未成功：' + (ev.warn || '') + '（已导出无声版本）'); break;
     case 'export_ready': onExportReady(ev); break;

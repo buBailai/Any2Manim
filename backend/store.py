@@ -114,7 +114,7 @@ def create_version(pid: str, seq: int, prompt: str) -> str:
 def finish_version(pid: str, seq: int, *, status: str, code: str,
                    storyboard: str = "", thumb: Optional[Path] = None,
                    preview: Optional[Path] = None, heal_attempts: int = 0,
-                   error: str = "") -> None:
+                   error: str = "", traceback: str = "") -> None:
     # 代码快照落盘
     if code:
         cf = config.project_dir(pid) / "code" / f"v{seq}.py"
@@ -122,11 +122,11 @@ def finish_version(pid: str, seq: int, *, status: str, code: str,
     with db.connect() as conn:
         conn.execute(
             "UPDATE versions SET status=?,code=?,storyboard=?,thumb_path=?,"
-            "preview_path=?,heal_attempts=?,error=? WHERE project_id=? AND seq=?",
+            "preview_path=?,heal_attempts=?,error=?,traceback=? WHERE project_id=? AND seq=?",
             (status, code, storyboard,
              _rel(thumb) if thumb else None,
              _rel(preview) if preview else None,
-             heal_attempts, error, pid, seq))
+             heal_attempts, error, traceback, pid, seq))
 
 
 def delete_version(pid: str, seq: int) -> None:

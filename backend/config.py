@@ -170,8 +170,8 @@ MAX_PREVIEW_SECONDS = 60                    # 单个场景时长上限（防超�
 
 # ── 自愈循环预算（第七节）────────────────────────────────────
 HEAL_MAX_ATTEMPTS = 4                       # 硬预算：最多尝试次数（主约束）
-HEAL_MAX_SECONDS = 180                      # 硬预算：heal 循环累计时间上限（含真实模型修复调用）
-HEAL_SAME_ERROR_STOP = 2                    # 同错连续 N 次即停
+HEAL_MAX_SECONDS = 300                      # 硬预算：heal 循环累计时间上限（含真实模型修复调用）
+HEAL_SAME_ERROR_STOP = 3                    # 同错累计 N 次即停（第 2 次先升级换思路提示，第 3 次才放弃）
 
 # ── worker 数（个人版=1 串行；校园版按核数）──────────────────
 RENDER_WORKERS = int(os.environ.get("A2M_WORKERS", "1"))

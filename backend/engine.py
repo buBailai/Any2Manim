@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable, Optional
 
-from . import config, edits, render
+from . import config, edits, lint, render
 from .llm import BaseLLM
 
 Emit = Callable[..., Awaitable[None]]
@@ -57,6 +57,7 @@ SYS_PLAN = (
     "规则：3~6 个 shot；第一个 shot 必须含 HEADLINE 动作，最后一个 shot 必须含 TAKEAWAY 动作；"
     "公式必须先有视觉 shot 铺垫，再用 REVEAL_FORMULA；不涉及公式就省略 formulas 字段。"
     "动作的内容写在 text 或 desc 字段里。"
+    "每个 shot 画面别贪多：同屏视觉元素最多 4 组（画面装不下会互相重叠），内容多就拆成更多 shot 分开讲。"
 )
 
 
@@ -111,17 +112,21 @@ _FEWSHOT = f'''from manim import *
 
 class {config.SCENE_CLASS_NAME}(Scene):
     def construct(self):
-        # --- 第1步：标题 ---
-        title = a2m_title("二次函数")
+        # shot_01：点题——认识二次函数
+        title = a2m_headline("二次函数")
         self.play(Write(title), run_time=1.2)
-        self.play(title.animate.to_edge(UP), run_time=0.6)
-        # --- 第2步：坐标系与抛物线 ---
+        cap1 = a2m_safe_caption("它的图像是一条抛物线")
+        self.play(FadeIn(cap1), run_time=0.8)
+        self.wait(0.6)
+        # shot_02：画出抛物线（先清场，只保留标题）
+        a2m_clear(self, title)
         ax = a2m_axes(x_range=[-3, 3, 1], y_range=[-1, 5, 1], x_length=6, y_length=4)
+        ax.move_to([-2.0, -0.2, 0])
         graph = ax.plot(lambda x: x**2, x_range=[-2.2, 2.2], color=A2M_CYAN)
         self.play(Create(ax), run_time=1.0)
         self.play(Create(graph), run_time=1.2)
-        # --- 第3步：公式 ---
-        eq = MathTex("y = x^2", font_size=48).next_to(ax, RIGHT, buff=0.4)
+        # shot_03：给出公式（坐标系保留，公式放旁边不压图）
+        eq = MathTex("y = x^2", font_size=48).next_to(ax, RIGHT, buff=0.8)
         self.play(Write(eq), run_time=0.8)
         self.wait(0.6)'''
 
@@ -161,6 +166,21 @@ _ROBUST = (
 )
 
 
+# 画面布局军规（针对高频翻车：镜头间元素残留叠加 / 文字重叠 / 公式超出画面）
+_LAYOUT = (
+    "\n【画面布局 · 硬性要求】\n"
+    "- 【镜头必须清场】除第一镜外，每个新 shot 开头先调用 `a2m_clear(self)` 淡出上一镜全部元素；"
+    "确需跨镜保留的对象作参数传入，如 `a2m_clear(self, ax, title)`。严禁上一镜元素还在画面上"
+    "就叠画下一镜——多镜元素堆叠是最常见的画面事故；\n"
+    "- 可用画面范围 x∈[-6.8, 6.8]、y∈[-3.0, 3.8]（底部 y<-3.0 是字幕安全区）："
+    "长公式/长文字/大图在摆放前先想会不会超边，可能超就用 `a2m_fit(对象)` 或 `.scale(0.8)` 缩到范围内；\n"
+    "- 同屏最多 4 组视觉元素：一屏摆不下就拆镜头分开讲，别硬塞；元素多时先 "
+    "`VGroup(...).arrange(方向, buff≥0.4)` 统一排布再整体 `a2m_fit` 缩放居中，别各自 move_to 挤叠；\n"
+    "- 标注/解说文字永远 `.next_to(对象, 方向, buff≥0.3)` 放旁边不盖住对象；多个标签相互错开；"
+    "同屏解说文字最多 2 块，新解说出现前先 FadeOut 旧解说。"
+)
+
+
 def _latex_directive() -> str:
     if config.has_latex():
         return ("\n【公式】本机可渲 LaTeX：公式用 MathTex，但保持简单、别对多部件做复杂下标操作；"
@@ -185,7 +205,9 @@ def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
         "  a2m_takeaway(text) 结论卡；a2m_formula_with_caption(latex, 大白话) 公式+注解；\n"
         "  a2m_term_tour(mathtex, [(项下标, 说明), ...]) 公式逐项小注（mathtex 需用 MathTex(\"a\",\"+\",\"b\") 分项）；\n"
         "  a2m_compare_layout(左, 右, 左标题, 右标题) 左右对比；a2m_vt_graph(t_max, v_max) 速度-时间坐标系；\n"
-        "  a2m_number_line(...) 数轴；a2m_timeline([标签...]) 横向时间轴。\n"
+        "  a2m_number_line(...) 数轴；a2m_timeline([标签...]) 横向时间轴；\n"
+        "  a2m_clear(self, 保留对象...) 镜头清场（淡出画面全部元素，传入的对象保留）；\n"
+        "  a2m_fit(对象) 超宽/超高时自动缩到画面安全区内。\n"
         "- 镜头动作尽量映射到上述积木：HEADLINE→a2m_headline、CAPTION→a2m_safe_caption、"
         "TAKEAWAY→a2m_takeaway、REVEAL_FORMULA→a2m_formula_with_caption、TERM_TOUR→a2m_term_tour、"
         "COMPARE→a2m_compare_layout、PLOT→a2m_vt_graph/a2m_axes，少从零排版。\n"
@@ -195,7 +217,7 @@ def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
         "REVEAL_FORMULA 要画出公式（按下方【公式】约束选 MathTex 或 Text）、TAKEAWAY 要画出结论文字；\n"
         "- 严禁「只画最有趣的那个图形（如只画一条曲线）就结束」而省略标题/解说/公式/对比/结论；\n"
         "- 每个 shot 至少有一次 self.play；输出前自检：计划里每个 shot、每个 HEADLINE/CAPTION/公式/TAKEAWAY 是否都在代码里。\n"
-        f"{_ROBUST}{_latex_directive()}\n"
+        f"{_ROBUST}{_LAYOUT}{_latex_directive()}\n"
         f"{_assets_hint(asset_names)}\n"
         f"参考范例（照此风格）：\n{_fewshot()}\n\n"
         f"只输出一个完整 Python 文件，含 `from manim import *` 和 "
@@ -203,14 +225,36 @@ def _sys_codegen(asset_names: Optional[list[str]] = None) -> str:
     )
 
 
-SYS_FIX = (
-    "你是 ManimCE 调试专家。下面的代码渲染报错了。请修复并返回"
-    "【完整可运行代码】（不是 diff、不要 markdown 围栏、不要解释）。\n"
-    "⚠️ 只修报错处，**必须保留原有的全部教学镜头与内容**——每个 shot、标题(HEADLINE)、"
-    "解说(CAPTION)、公式、逐项讲解、结论(TAKEAWAY)都要原样还在。"
-    "严禁为了让它跑通就删减镜头、把整片简化成只画一个图形。\n"
-    "常见坑：ShowCreation→Create、TexMobject→MathTex、manimlib→manim、"
-    "把中文塞进 MathTex（应改用 Text）。"
+def _sys_fix() -> str:
+    """修复提示词：必须带上与 codegen 相同的环境约束。
+
+    （不带的话修复模型不知道 cheatsheet 禁令/本机无 LaTeX/a2m helper 已注入，
+    会把禁用 API 改回来、把 Text 改成 MathTex、或以为 a2m_* 未定义而乱改——
+    这是此前「同错连修不好」失败的主因。）
+    """
+    return (
+        "你是 ManimCE 调试专家。下面的代码渲染报错了。请修复并返回"
+        "【完整可运行代码】（不是 diff、不要 markdown 围栏、不要解释）。\n"
+        "⚠️ 只修报错处，**必须保留原有的全部教学镜头与内容**——每个 shot、标题(HEADLINE)、"
+        "解说(CAPTION)、公式、逐项讲解、结论(TAKEAWAY)都要原样还在。"
+        "严禁为了让它跑通就删减镜头、把整片简化成只画一个图形。\n"
+        f"环境约束（修复时同样必须遵守，违反即错误）：\n\n{_load_cheatsheet()}\n"
+        f"{_latex_directive()}\n"
+        "渲染环境已注入这些 helper（**它们已定义、可直接用，不要自己重新定义或删除**）：\n"
+        "a2m_title/a2m_caption/a2m_highlight/a2m_axes/a2m_asset/a2m_headline/"
+        "a2m_safe_caption/a2m_takeaway/a2m_formula_with_caption/a2m_term_tour/"
+        "a2m_compare_layout/a2m_vt_graph/a2m_number_line/a2m_timeline/"
+        "a2m_clear(self, 保留对象...)/a2m_fit(对象)，"
+        "色板常量 A2M_ACCENT/A2M_VIO/A2M_CYAN/A2M_INK，以及 np（numpy）。"
+    )
+
+
+# 同一个错误上一轮修复后仍在 → 上次思路无效，强制换打法（宁可朴素也要能渲）
+_ESCALATE = (
+    "\n⚠️【上一次修复后仍是同一个错误】——上次的修法无效，这次必须换思路：\n"
+    "定位到出错的那一条语句，要么用最朴素、确定能渲的写法整段重写它"
+    "（基础图形 / Text / 简单 FadeIn），要么直接删掉这一个非关键效果。"
+    "只动出错这一处，保住其余全部镜头与内容。不要再重复上次的修法。"
 )
 
 SYS_TEACH_REPAIR = (
@@ -229,6 +273,78 @@ def _teach_repair_prompt(code: str, plan: str, issues: "list[dict]") -> str:
     plan_block = f"教学镜头计划：\n{plan}\n\n" if plan else ""
     return (f"{plan_block}发现的教学问题：\n{issue_text}\n\n"
             f"当前代码：\n{code}\n\n请返回改进后的完整代码。")
+
+
+# ── 布局修复（Phase：能跑、能教之后的「能看」）────────────────────
+def _sys_layout_repair() -> str:
+    return (
+        "你是 ManimCE 画面布局质检 + 修复师。下面这段代码能渲染成功，但画面有布局问题"
+        "（元素重叠 / 超出画面 / 镜头切换未清场导致元素堆叠）。请做【只动布局、不动内容】的最小修复，"
+        "返回【完整可运行代码】（不是 diff、不要 markdown 围栏、不要解释）。\n"
+        "修法优先级：\n"
+        "1. 镜头切换残留堆叠 → 在新 shot 开头加 a2m_clear(self)（需跨镜保留的对象作参数：a2m_clear(self, ax)）；\n"
+        "2. 元素超出画面 / 压进字幕区 → 缩小（a2m_fit(对象) 或 .scale(0.8)）或移回 x∈[-6.8,6.8]、y∈[-3.0,3.8]；\n"
+        "3. 文字互相重叠 → 用 .next_to(..., buff≥0.3) / VGroup(...).arrange(方向, buff≥0.4) 错开，"
+        "或新文字出现前先 FadeOut 旧文字；\n"
+        "4. 单镜元素太多太大 → 先 VGroup 统一 arrange 再整体 a2m_fit 缩放居中。\n"
+        "⚠️ 严禁删减教学内容：每个 shot、标题、解说、公式、结论都必须原样保留，"
+        "只调位置/大小/清场时机；保留 `# shot_NN：...` 注释行。\n"
+        f"环境约束（修复时同样必须遵守，违反即错误）：\n\n{_load_cheatsheet()}\n{_latex_directive()}\n"
+        "渲染环境已注入这些 helper（已定义、可直接用）：a2m_clear/a2m_fit/a2m_headline/"
+        "a2m_safe_caption/a2m_takeaway/a2m_formula_with_caption/a2m_term_tour/"
+        "a2m_compare_layout/a2m_axes/a2m_vt_graph/a2m_number_line/a2m_timeline 等全部 a2m_* 积木。"
+    )
+
+
+# 镜头切换是否有清场/转场动作的静态信号（宁漏勿误报：出现任一即认为该处理过）
+_CLEAR_HINTS = ("a2m_clear", "FadeOut", "ReplacementTransform", "Transform(",
+                "Uncreate", "Unwrite", "self.clear()")
+
+
+def _static_clear_issues(code: str) -> list[str]:
+    """相邻两镜的代码窗口里连一个清场/转场动作都没有 → 上一镜元素必然残留叠加。"""
+    shots = split_shots(code)
+    out: list[str] = []
+    for k in range(1, len(shots)):
+        window = shots[k - 1]["code"] + shots[k]["code"]
+        if not any(h in window for h in _CLEAR_HINTS):
+            out.append(f"第{k + 1}镜（{shots[k]['label']}）开场前没有任何清场/转场动作"
+                       f"（a2m_clear/FadeOut/Transform 都没出现），上一镜元素会残留并与本镜叠加——"
+                       f"如非有意保留，请在该镜开头加 a2m_clear(self, 需保留的对象...)")
+    return out
+
+
+async def _layout_pass(result: GenResult, plan: str, llm: BaseLLM, emit: Emit) -> None:
+    """对已渲通过的代码做「能看」布局体检：哨兵实测报告 + 静态清场检查 → 一次布局修复。
+
+    有界（1 次 LLM + 1 次 dry_run）、失败回滚：修复版必须仍能渲染、且实测布局问题确有减少才采用。
+    """
+    runtime_n = len(result.layout_issues or [])
+    issues = list(result.layout_issues or []) + _static_clear_issues(result.code)
+    if not issues:
+        return
+    await emit("layout_repair", count=len(issues))
+    plan_block = f"教学镜头计划：\n{plan}\n\n" if plan else ""
+    user = (f"{plan_block}布局问题（渲染验证时实测/静态发现）：\n"
+            + "\n".join(f"- {m}" for m in issues)
+            + f"\n\n当前代码：\n{result.code}\n\n请返回修复布局后的完整代码。")
+    try:
+        raw = llm.complete(_sys_layout_repair(), user, task="fix", temperature=0.3)
+        code2 = render.extract_code(raw)
+        ok, _ = render.syntax_check(code2)
+        if ok:
+            code2, pre = lint.preflight(code2)
+            if not pre:
+                v = await render.dry_run(code2)
+                # 采用条件：仍能渲染，且实测布局问题确有减少（原本 0 个则须保持 0 个）
+                if v.ok and len(v.layout_issues) <= max(0, runtime_n - 1):
+                    result.code = code2
+                    result.layout_issues = v.layout_issues
+    except Exception:  # noqa: BLE001 —— 布局修复是增强步骤，任何失败都不影响已能渲染的版本
+        pass
+    if result.layout_issues:   # 修完仍剩（或没修成）的问题给老师留提示（非阻塞）
+        result.warnings = list(result.warnings) + \
+            [f"画面布局提示：{m}" for m in result.layout_issues]
 
 
 SYS_EDIT = (
@@ -289,9 +405,11 @@ class GenResult:
     storyboard: str = ""
     attempts: int = 0
     error: str = ""              # 失败时给老师的大白话
+    traceback: str = ""          # 失败时的最后一条精简报错（遥测：挖数据喂避坑清单用）
     env_missing: bool = False    # 环境缺依赖（区别于代码错）
     no_change: bool = False      # 定向编辑没定位到改处：保住旧版、请老师换说法（绝不重做整片）
     warnings: list = field(default_factory=list)  # 教学质量提示（非阻塞，记录用）
+    layout_issues: list = field(default_factory=list)  # 布局哨兵发现的画面问题（重叠/越界/堆积）
 
 
 def _fix_prompt(code: str, tb: str, intent: str, plan: str = "") -> str:
@@ -311,6 +429,33 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
     last_good: Optional[str] = None
     seen: list[str] = []
     attempt = attempt0
+    last_tb = ""
+
+    async def _try_fix(tb: str, reason: str, extra: str = "") -> bool:
+        """记签名并让 LLM 修一版。返回 False = 该停（同错到限 / LLM 挂了）。
+
+        同一错误第 2 次出现不再直接熔断：升级提示「上次修法无效，换思路」并升温度，
+        第 3 次（HEAL_SAME_ERROR_STOP）才停——此前 2 次即停使近半失败只修了 1 次就放弃。
+        """
+        nonlocal code, attempt
+        sig = _err_signature(tb)
+        seen.append(sig)
+        if seen.count(sig) >= config.HEAL_SAME_ERROR_STOP:
+            return False
+        attempt += 1
+        await emit("healing", attempt=attempt, reason=reason)
+        escalate = seen.count(sig) >= 2
+        try:
+            fixed = render.extract_code(
+                llm.complete(_sys_fix(),
+                             _fix_prompt(code, tb, intent, plan) + extra
+                             + (_ESCALATE if escalate else ""),
+                             task="fix", temperature=0.6 if escalate else 0.3))
+        except Exception:  # noqa: BLE001 —— 修复调用挂了：停循环保住现有代码，别让整个任务变「内部错误」
+            return False
+        if fixed.strip():
+            code = fixed          # 修复抽不出代码就保留原码，绝不清空
+        return True
 
     while attempt < config.HEAL_MAX_ATTEMPTS:
         # 硬预算：累计时间
@@ -320,52 +465,84 @@ async def heal(code: str, intent: str, llm: BaseLLM, emit: Emit,
         # 1) 静态语法校验（秒级，不进渲染）
         ok, serr = render.syntax_check(code)
         if not ok:
-            sig = _err_signature(serr)
-            seen.append(sig)
-            if seen.count(sig) >= config.HEAL_SAME_ERROR_STOP:
-                break
-            attempt += 1
-            await emit("healing", attempt=attempt, reason="修正语法")
-            fixed = render.extract_code(
-                llm.complete(SYS_FIX, _fix_prompt(code, serr, intent, plan),
-                             task="fix", temperature=0.3))
-            if fixed.strip():
-                code = fixed          # 修复抽不出代码就保留原码，绝不清空
-            continue
+            last_tb = serr
+            if await _try_fix(serr, "修正语法"):
+                continue
+            break
+
+        # 1.5) 确定性预检：机械修正已知错误写法；剩下的"必挂"问题（中文进 MathTex、
+        #      未定义名字）带精确行号直接喂修复模型——省一次 30~60s 的 dry_run 试错。
+        code, pre = lint.preflight(code)
+        if pre:
+            tb = "渲染前静态检查发现必错问题（无需真渲已可确定失败）：\n" + \
+                 "\n".join("- " + i["msg"] for i in pre)
+            last_tb = tb
+            if await _try_fix(tb, "修正静态检查问题"):
+                continue
+            break
 
         # 2) 验证渲染（dry_run，只构建不出片）
         if code.strip():
-            last_good = code          # 语法已过且非空 → 作为失败时的兜底代码
+            last_good = code          # 语法/预检已过且非空 → 作为失败时的兜底代码
         await emit("verifying", attempt=attempt)
         res = await render.dry_run(code)
         if res.ok:
-            return GenResult(True, code=code, attempts=attempt)
+            return GenResult(True, code=code, attempts=attempt,
+                             layout_issues=res.layout_issues)
+        last_tb = res.traceback
 
         # 3) 分类
         cls = classify_error(res.traceback, res.timed_out)
         if cls is ErrClass.ENV:
             return GenResult(False, code=last_good or code, attempts=attempt,
                              error="渲染环境缺少依赖（如 LaTeX/ffmpeg），不是代码问题。",
-                             env_missing=True)
+                             traceback=res.traceback, env_missing=True)
 
-        sig = _err_signature(res.traceback)
-        seen.append(sig)
-        if seen.count(sig) >= config.HEAL_SAME_ERROR_STOP:
-            break
-
-        attempt += 1
-        reason = "简化场景" if cls is ErrClass.HEAVY else "修正代码"
-        await emit("healing", attempt=attempt, reason=reason)
         extra = ("\n注意：场景过重/超时，请精简每个镜头的实现（减少元素数量、缩短动画时长），"
                  "但仍保留全部 shot 与教学内容，不要删掉镜头。") if cls is ErrClass.HEAVY else ""
-        fixed = render.extract_code(
-            llm.complete(SYS_FIX, _fix_prompt(code, res.traceback, intent, plan) + extra,
-                         task="fix", temperature=0.3))
-        if fixed.strip():
-            code = fixed          # 同理：修复无产出就保留原码
+        if not await _try_fix(res.traceback,
+                              "简化场景" if cls is ErrClass.HEAVY else "修正代码", extra):
+            break
 
-    return GenResult(False, code=last_good or code, attempts=attempt,
+    return GenResult(False, code=last_good or code, attempts=attempt, traceback=last_tb,
                      error="多次尝试仍未渲染成功。可以换个说法重述、退回上一版本、或查看代码手动调。")
+
+
+# 安全模式（最后兜底）：自愈耗尽后，用最保守写法整片重写一次再验证
+_SAFE_MODE = (
+    "\n\n🚨【安全模式 · 最高优先级】上一版代码多次修复仍渲染失败，这是最后一次机会，"
+    "必须用最保守、绝对稳的写法重写整片：\n"
+    "- 只用 Text、基础图形（Circle/Square/Rectangle/Line/Arrow/Dot/Polygon）、"
+    "Axes/ax.plot 与 a2m_* 教学积木；\n"
+    "- 禁止：add_updater / always_redraw / ValueTracker、对 MathTex 做下标索引"
+    "（formula[0] 这类）、3D、罕见 API、复杂嵌套动画；\n"
+    "- 公式整条呈现（单串 MathTex 或 Text），不做逐项拆解；\n"
+    "- 动画只用 Create/Write/FadeIn/FadeOut/Transform/Indicate；\n"
+    "- 教学镜头计划的每个 shot 仍要全部落地——宁可画面朴素，不可缺镜头。"
+)
+
+
+async def _safe_retry(prev: GenResult, description: str, storyboard: str,
+                      llm: BaseLLM, emit: Emit,
+                      asset_names: Optional[list[str]]) -> GenResult:
+    """自愈耗尽后的最后兜底：安全模式重写整片 + 一小段自愈预算。失败则退回上一版结果。"""
+    await emit("safe_retry")
+    try:
+        raw = llm.complete(_sys_codegen(asset_names) + _SAFE_MODE,
+                           f"需求：{description}\n\n教学镜头计划：\n{storyboard}\n\n"
+                           f"上一版最终报错（这次务必避开）：\n{prev.traceback[:600]}",
+                           task="codegen", temperature=0.2)
+    except Exception:  # noqa: BLE001
+        return prev
+    code = render.extract_code(raw)
+    if not code.strip():
+        return prev
+    await emit("code_draft", code=code)
+    result = await heal(code, description, llm, emit,
+                        attempt0=max(0, config.HEAL_MAX_ATTEMPTS - 2), plan=storyboard)
+    if result.ok:
+        return result
+    return prev if prev.code else result
 
 
 async def generate(description: str, llm: BaseLLM, emit: Emit,
@@ -402,9 +579,12 @@ async def generate(description: str, llm: BaseLLM, emit: Emit,
 
     # 自愈（带上教学镜头计划，修报错时不至于把镜头简化掉）
     result = await heal(code, description, llm, emit, plan=storyboard)
+    if not result.ok and not result.env_missing:
+        result = await _safe_retry(result, description, storyboard, llm, emit, asset_names)
     result.storyboard = storyboard
     if result.ok:
         await _teach_pass(result, description, storyboard, llm, emit)  # 「能教」质检 + 一次教学修复
+        await _layout_pass(result, storyboard, llm, emit)              # 「能看」布局体检 + 一次布局修复
     elif not result.code and prior_code:
         result.code = prior_code   # 极端情况(没产出任何代码)才退回上一版
     # 失败时【保留这次尝试的代码】，便于老师在此基础上继续改（上一个能渲版本仍在时间线里可回退）
@@ -435,6 +615,7 @@ async def _teach_pass(result: GenResult, intent: str, plan: str,
     if v.ok and not [i for i in render.teachability_issues(code2, intent)
                      if i.get("severity") == "block"]:
         result.code = code2
+        result.layout_issues = v.layout_issues   # 布局体检以采用后的代码为准
 
 
 async def edit(prior_code: str, instruction: str, llm: BaseLLM, emit: Emit,

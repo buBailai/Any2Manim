@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS versions (
     preview_path TEXT,                     -- 低清预览(临时,可被 GC)
     heal_attempts INTEGER DEFAULT 0,
     error       TEXT,                      -- 失败时的大白话原因
+    traceback   TEXT,                      -- 失败时最后一条精简报错（遥测挖数据用）
     created_at  REAL NOT NULL,
     UNIQUE(project_id, seq)
 );
@@ -94,6 +95,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     vcols = {r["name"] for r in conn.execute("PRAGMA table_info(versions)").fetchall()}
     if "narration" not in vcols:
         conn.execute("ALTER TABLE versions ADD COLUMN narration TEXT")
+    if "traceback" not in vcols:
+        # 失败遥测：存最后一条精简报错（error 是给老师的大白话），定期挖数据喂避坑清单
+        conn.execute("ALTER TABLE versions ADD COLUMN traceback TEXT")
 
 
 def init_db() -> None:

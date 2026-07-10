@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
+import os
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +31,7 @@ class RunResult:
     output: Optional[Path] = None     # 产物路径（thumbnail/preview/export）
     traceback: str = ""               # 失败时的精简 traceback
     timed_out: bool = False
+    layout_issues: list = field(default_factory=list)  # dry_run 布局哨兵发现的问题（渲染成功也可能有）
 
 
 # ── 代码清洗与静态校验 ──────────────────────────────────────
@@ -111,11 +114,13 @@ def condense_traceback(stderr: str, limit: int = 1400) -> str:
 
 
 # ── 子进程执行 ──────────────────────────────────────────────
-async def _run_manim(args: list[str], timeout: int) -> tuple[int, str, bool]:
+async def _run_manim(args: list[str], timeout: int,
+                     extra_env: Optional[dict] = None) -> tuple[int, str, bool]:
     proc = await asyncio.create_subprocess_exec(
         *config.MANIM_CMD, *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, **extra_env} if extra_env else None,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -148,14 +153,24 @@ async def dry_run(code: str) -> RunResult:
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         f = _write_code(code, work)
+        report = work / "layout_report.json"
         rc, out, to = await _run_manim(
             ["render", "--dry_run", "-q", "l", "--media_dir", str(work / "m"),
              str(f), SC],
-            config.DRYRUN_TIMEOUT)
+            config.DRYRUN_TIMEOUT,
+            extra_env={"A2M_LAYOUT_REPORT": str(report)})
         if to:
             return RunResult(False, traceback="渲染超时（场景可能过重）", timed_out=True)
         if rc == 0:
-            return RunResult(True)
+            issues: list = []
+            try:
+                if report.exists():
+                    data = json.loads(report.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        issues = [str(x) for x in data]
+            except Exception:  # noqa: BLE001 —— 布局报告只是增强信号，读不出不影响主流程
+                pass
+            return RunResult(True, layout_issues=issues)
         return RunResult(False, traceback=condense_traceback(out))
 
 

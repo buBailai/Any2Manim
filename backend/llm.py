@@ -23,6 +23,15 @@ class LLMError(Exception):
     pass
 
 
+# 推理模型（R1 等）经部分代理会把思考过程以 <think>...</think> 内联在正文里，
+# 不剥掉会污染代码抽取/JSON 解析。
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    return _THINK_RE.sub("", text).strip()
+
+
 class BaseLLM:
     name = "base"
     demo = False
@@ -47,6 +56,12 @@ class OpenAILLM(BaseLLM):
             return b
         return f"{b}/chat/completions"
 
+    # 长代码输出的显式上限：不少厂商默认输出上限很低（甚至 1~4K token），长片代码
+    # 会被静默截断 → 语法错 → 自愈循环里修一版截一版，死循环。显式给足。
+    MAX_TOKENS = 8192
+    # 读超时给足 300s（推理/慢模型一次 codegen 可能 2~3 分钟）；连接失败则快速暴露。
+    TIMEOUT = httpx.Timeout(300.0, connect=15.0)
+
     def complete(self, system: str, user: str, *, task: str = "codegen",
                  temperature: float = 0.2) -> str:
         url = self._endpoint()
@@ -57,18 +72,34 @@ class OpenAILLM(BaseLLM):
                 {"role": "user", "content": user},
             ],
             "temperature": temperature,
+            "max_tokens": self.MAX_TOKENS,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        try:
-            with httpx.Client(timeout=120) as cli:
-                r = cli.post(url, json=payload, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-            return data["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as e:
-            raise LLMError(f"LLM 接口返回 {e.response.status_code}: {e.response.text[:200]}")
-        except Exception as e:  # noqa: BLE001
-            raise LLMError(f"LLM 调用失败：{e}")
+        last_err: Exception | None = None
+        for attempt in range(2):          # 超时/5xx/断连 自动重试 1 次
+            try:
+                with httpx.Client(timeout=self.TIMEOUT) as cli:
+                    r = cli.post(url, json=payload, headers=headers)
+                    if r.status_code == 400 and "max_tokens" in payload \
+                            and "max_tokens" in r.text:
+                        # 个别模型输出上限低于 8192 会拒收 → 去掉该参数按厂商默认重发
+                        payload.pop("max_tokens")
+                        r = cli.post(url, json=payload, headers=headers)
+                    r.raise_for_status()
+                    data = r.json()
+                return _strip_think(data["choices"][0]["message"]["content"])
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code >= 500 and attempt == 0:
+                    last_err = e
+                    continue
+                raise LLMError(f"LLM 接口返回 {e.response.status_code}: {e.response.text[:200]}")
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                last_err = e
+                if attempt == 0:
+                    continue
+            except Exception as e:  # noqa: BLE001
+                raise LLMError(f"LLM 调用失败：{e}")
+        raise LLMError(f"LLM 调用失败（已重试）：{last_err}")
 
 
 # ── 演示模式（无 Key）──────────────────────────────────────

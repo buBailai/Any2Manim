@@ -73,42 +73,64 @@ def a2m_axes(**kw):
     return Axes(**kw)
 
 
+def a2m_fit(mobj, max_w=12.5, max_h=6.0):
+    """超宽/超高时等比缩小到画面安全区内（只缩不放大）。返回对象本身，可链式用。"""
+    try:
+        if mobj.width > max_w:
+            mobj.scale_to_fit_width(max_w)
+        if mobj.height > max_h:
+            mobj.scale_to_fit_height(max_h)
+    except Exception:
+        pass
+    return mobj
+
+
+def a2m_clear(scene, *keep, run_time=0.5):
+    """镜头清场：淡出当前画面全部元素（keep 里的除外）。新 shot 开头调用，
+    避免上一镜元素残留叠加。用法：a2m_clear(self) 或 a2m_clear(self, ax, title)。"""
+    doomed = [m for m in list(scene.mobjects) if not any(m is k for k in keep)]
+    if doomed:
+        scene.play(*[FadeOut(m) for m in doomed], run_time=run_time)
+        for m in doomed:
+            scene.remove(m)
+
+
 # ── 教学积木（镜头动作 → 现成组件，省得每次从零造布局）──────────
 def a2m_headline(text, **kw):
-    """HEADLINE：大标题，自动置顶。返回 Text。"""
-    return a2m_title(text, **kw).to_edge(UP, buff=0.5)
+    """HEADLINE：大标题，自动置顶，超宽自动缩小。返回 Text。"""
+    return a2m_fit(a2m_title(text, **kw), max_w=12.8).to_edge(UP, buff=0.5)
 
 
 def a2m_safe_caption(text, **kw):
-    """CAPTION：底部一句解说，自动落在字幕安全区上方（不占 y<-3.0）。"""
+    """CAPTION：底部一句解说，自动落在字幕安全区上方（不占 y<-3.0），超宽自动缩小。"""
     kw.setdefault("font_size", 28)
     kw.setdefault("color", GREY_B)
-    return Text(text, **kw).to_edge(DOWN, buff=1.3)
+    return a2m_fit(Text(text, **kw), max_w=13.0).to_edge(DOWN, buff=1.3)
 
 
 def a2m_takeaway(text, **kw):
     """TAKEAWAY：结论卡，醒目金黄 + 圆角框，居中偏下。返回 VGroup。"""
     kw.setdefault("font_size", 34)
-    t = Text(text, color="#FFD479", **kw)
+    t = a2m_fit(Text(text, color="#FFD479", **kw), max_w=11.5)
     box = SurroundingRectangle(t, color="#FFD479", buff=0.35, corner_radius=0.18)
     box.set_fill("#2A2616", opacity=0.6)
     return VGroup(box, t).move_to([0, -1.0, 0])
 
 
 def a2m_formula_with_caption(latex, caption, formula_size=52, caption_size=28):
-    """REVEAL_FORMULA：公式（裸 LaTeX，勿含中文）+ 下方一句大白话，整体居中。返回 VGroup。"""
-    f = MathTex(latex, font_size=formula_size)
-    c = Text(caption, font_size=caption_size, color=GREY_B)
+    """REVEAL_FORMULA：公式（裸 LaTeX，勿含中文）+ 下方一句大白话，整体居中，超宽自动缩小。返回 VGroup。"""
+    f = a2m_fit(MathTex(latex, font_size=formula_size), max_w=12.0)
+    c = a2m_fit(Text(caption, font_size=caption_size, color=GREY_B), max_w=12.5)
     return VGroup(f, c).arrange(DOWN, buff=0.35)
 
 
 def a2m_compare_layout(left, right, left_label="", right_label="", buff=2.0):
-    """COMPARE：两个对象左右分置，各带小标题。返回 VGroup。"""
+    """COMPARE：两个对象左右分置，各带小标题；整体超出安全区自动缩小。返回 VGroup。"""
     lg = VGroup(Text(left_label, font_size=28, color=A2M_CYAN), left).arrange(DOWN, buff=0.3) \
         if left_label else VGroup(left)
     rg = VGroup(Text(right_label, font_size=28, color=A2M_VIO), right).arrange(DOWN, buff=0.3) \
         if right_label else VGroup(right)
-    return VGroup(lg, rg).arrange(RIGHT, buff=buff)
+    return a2m_fit(VGroup(lg, rg).arrange(RIGHT, buff=buff), max_w=13.0, max_h=5.5)
 
 
 def a2m_term_tour(formula, notes):
@@ -150,6 +172,97 @@ def a2m_timeline(labels, color=GREY_B, width=11.0):
         dot = Dot([float(x), 0, 0], radius=0.06, color=color)
         g.add(dot, Text(str(lab), font_size=26).next_to(dot, UP, buff=0.25))
     return g
+# ── 布局哨兵（仅验证渲染时启用）：每次 play 后检查越界/文字重叠/堆积，写 JSON 报告 ──
+_A2M_REPORT = _os.environ.get("A2M_LAYOUT_REPORT", "")
+if _A2M_REPORT:
+    import json as _json
+
+    _a2m_viol, _a2m_seen, _a2m_play_n = [], set(), [0]
+
+    def _a2m_label(m):
+        t = getattr(m, "original_text", None) or getattr(m, "text", None) \
+            or getattr(m, "tex_string", None) or type(m).__name__
+        t = str(t).strip().replace("\n", " ")
+        return t[:22] + "…" if len(t) > 22 else t
+
+    def _a2m_texts(ms, out):
+        for m in ms:
+            if isinstance(m, (Text, MarkupText)) or type(m).__name__ in ("MathTex", "Tex", "SingleStringMathTex"):
+                if getattr(m, "width", 0) > 0.01:
+                    out.append(m)
+            else:
+                _a2m_texts(getattr(m, "submobjects", []), out)
+        return out
+
+    def _a2m_box(m):
+        return (m.get_left()[0], m.get_right()[0], m.get_bottom()[1], m.get_top()[1])
+
+    def _a2m_overlap(a, b):
+        try:
+            al, ar, ab, at = _a2m_box(a)
+            bl, br, bb, bt = _a2m_box(b)
+        except Exception:
+            return 0.0
+        w, h = min(ar, br) - max(al, bl), min(at, bt) - max(ab, bb)
+        if w <= 0 or h <= 0:
+            return 0.0
+        amin = min((ar - al) * (at - ab), (br - bl) * (bt - bb))
+        return (w * h) / amin if amin > 1e-6 else 0.0
+
+    def _a2m_add(msg):
+        key = msg.split("：", 1)[-1]   # 去掉「第N次play后」前缀去重：同一问题只报首次出现
+        if key in _a2m_seen or len(_a2m_viol) >= 12:
+            return
+        _a2m_seen.add(key)
+        _a2m_viol.append(msg)
+        try:
+            with open(_A2M_REPORT, "w", encoding="utf-8") as fh:
+                _json.dump(_a2m_viol, fh, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _a2m_check(scene):
+        n = _a2m_play_n[0]
+        for m in scene.mobjects:
+            try:
+                if m.width < 0.01 and m.height < 0.01:
+                    continue
+                l, r, b, t = _a2m_box(m)
+            except Exception:
+                continue
+            if r > 7.3 or l < -7.3 or t > 4.15 or b < -4.15:
+                _a2m_add(f"第{n}次play后：「{_a2m_label(m)}」超出画面（x∈[{l:.1f},{r:.1f}] y∈[{b:.1f},{t:.1f}]，"
+                         f"画面范围 x±7.1/y±4.0）——缩小(a2m_fit/.scale)或移回画面内")
+        texts = _a2m_texts(scene.mobjects, [])
+        for m in texts:
+            try:
+                if m.get_bottom()[1] < -3.25:
+                    _a2m_add(f"第{n}次play后：文字「{_a2m_label(m)}」压进底部字幕安全区(y<-3.0)——"
+                             f"上移或改用 a2m_safe_caption")
+            except Exception:
+                pass
+        for i in range(len(texts)):
+            for j in range(i + 1, len(texts)):
+                ratio = _a2m_overlap(texts[i], texts[j])
+                if ratio > 0.3:
+                    _a2m_add(f"第{n}次play后：文字「{_a2m_label(texts[i])}」与「{_a2m_label(texts[j])}」"
+                             f"重叠约{int(ratio * 100)}%——错开位置或先 FadeOut 旧文字")
+        if len(scene.mobjects) > 14:
+            _a2m_add(f"第{n}次play后：同屏 {len(scene.mobjects)} 个顶层元素、过度拥挤——"
+                     f"多半是上一镜没清场，镜头切换处调用 a2m_clear(self, 需保留的对象...)")
+
+    _a2m_orig_play = Scene.play
+
+    def _a2m_play(self, *args, **kwargs):
+        r = _a2m_orig_play(self, *args, **kwargs)
+        _a2m_play_n[0] += 1
+        try:
+            _a2m_check(self)
+        except Exception:
+            pass
+        return r
+
+    Scene.play = _a2m_play
 # ── 以下为本场景代码 ───────────────────────────────────
 '''
 

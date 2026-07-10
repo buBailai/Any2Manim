@@ -108,7 +108,8 @@ async def _run_generation(pid: str, prompt: str, shot_index: Optional[int] = Non
         if result.env_missing or not result.code:
             store.finish_version(pid, seq, status="failed", code=result.code or "",
                                  storyboard=result.storyboard,
-                                 heal_attempts=result.attempts, error=result.error)
+                                 heal_attempts=result.attempts, error=result.error,
+                                 traceback=getattr(result, "traceback", ""))
             msg = result.error or "生成失败"
             store.add_message(pid, "ai", msg, version_seq=seq)
             await emit("failed", error=msg, env_missing=result.env_missing,
@@ -139,7 +140,8 @@ async def _run_generation(pid: str, prompt: str, shot_index: Optional[int] = Non
         store.finish_version(pid, seq, status="failed", code=result.code,
                              storyboard=result.storyboard,
                              thumb=thumb if tr.ok else None,
-                             heal_attempts=result.attempts, error=err)
+                             heal_attempts=result.attempts, error=err,
+                             traceback=(pr.traceback or getattr(result, "traceback", "")))
         chat = result.error if fallback else "预览渲染失败，可换个说法重试。"
         store.add_message(pid, "ai", chat, version_seq=seq)
         await emit("failed", error=("多次尝试仍未渲染成功" if fallback else "预览渲染失败"),
